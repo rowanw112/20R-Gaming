@@ -166,21 +166,17 @@ class NicknameSync(commands.Cog):
         has_any_managed_role = bool(current_user_roles & (ALL_STAFF_ROLE_IDS | ALL_RANK_ROLE_IDS | VG_ROLE_IDS))
 
         if has_any_managed_role:
-            is_only_recruit = (
-                any(r_id in current_user_roles for r_id in RECRUIT_ROLE_IDS) and 
-                not any(r_id in current_user_roles for r_id in (ALL_STAFF_ROLE_IDS | ALL_RANK_ROLE_IDS | VG_ROLE_IDS) - RECRUIT_ROLE_IDS)
-            )
+            # Add Member Role
+            for member_id in ALL_MEMBER_ROLE_IDS:
+                m_role = after.guild.get_role(member_id)
+                if m_role and m_role not in after.roles:
+                    roles_to_add.append(m_role)
 
-            if not is_only_recruit:
-                for member_id in ALL_MEMBER_ROLE_IDS:
-                    m_role = after.guild.get_role(member_id)
-                    if m_role and m_role not in after.roles:
-                        roles_to_add.append(m_role)
-
-                for stranger_id in ALL_STRANGER_ROLE_IDS:
-                    s_role = after.guild.get_role(stranger_id)
-                    if s_role and s_role in after.roles:
-                        roles_to_remove.append(s_role)
+            # Remove Stranger Role
+            for stranger_id in ALL_STRANGER_ROLE_IDS:
+                s_role = after.guild.get_role(stranger_id)
+                if s_role and s_role in after.roles:
+                    roles_to_remove.append(s_role)
 
         # Batch execute role updates
         if roles_to_add:
