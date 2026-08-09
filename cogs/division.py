@@ -145,6 +145,9 @@ class DivisionManager(commands.Cog):
 
             # 2. Build Category Permission Overwrites
             category_overwrites = {
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=False
+                ),
                 member_role: discord.PermissionOverwrite(
                     view_channel=True,
                     send_messages=True,
@@ -213,11 +216,18 @@ class DivisionManager(commands.Cog):
                 reason=f"Division Setup: Created by {interaction.user}",
             )
 
-            # 4. Create Channels
+            # 4. Create Channels with Explicit Overwrites
+            # Read-Only Channels: Members can read/react, Staff can write/manage
             read_only_overwrites = {
                 member_role: discord.PermissionOverwrite(
-                    send_messages=False, add_reactions=True
-                )
+                    view_channel=True, send_messages=False, add_reactions=True, read_message_history=True
+                ),
+                staff_role: discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, manage_messages=True, pin_messages=True, read_message_history=True
+                ),
+                div_staff_role: discord.PermissionOverwrite(
+                    view_channel=True, send_messages=True, manage_messages=True, pin_messages=True, manage_channels=True, read_message_history=True
+                ),
             }
 
             info_chan = await guild.create_text_channel(
@@ -234,32 +244,34 @@ class DivisionManager(commands.Cog):
                 reason=f"Division Setup: Created by {interaction.user}",
             )
 
+            # Synchronized Channels (inherit permissions directly from Category)
             general_chan = await guild.create_text_channel(
                 name=f"{slug_short}-general",
                 category=category,
                 reason=f"Division Setup: Created by {interaction.user}",
             )
 
+            clips_chan = await guild.create_text_channel(
+                name=f"{slug_short}-clips",
+                category=category,
+                reason=f"Division Setup: Created by {interaction.user}",
+            )
+
+            # Private Staff Channel Overwrites
             staff_chan_overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 member_role: discord.PermissionOverwrite(view_channel=False),
                 staff_role: discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True
+                    view_channel=True, send_messages=True, read_message_history=True, manage_messages=True
                 ),
                 div_staff_role: discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True, read_message_history=True
+                    view_channel=True, send_messages=True, read_message_history=True, manage_messages=True, manage_channels=True
                 ),
             }
             staff_chan = await guild.create_text_channel(
                 name=f"{slug_short}-staff",
                 category=category,
                 overwrites=staff_chan_overwrites,
-                reason=f"Division Setup: Created by {interaction.user}",
-            )
-
-            clips_chan = await guild.create_text_channel(
-                name=f"{slug_short}-clips",
-                category=category,
                 reason=f"Division Setup: Created by {interaction.user}",
             )
 
@@ -327,14 +339,12 @@ class DivisionManager(commands.Cog):
         guild = interaction.guild
         roles_to_delete = set()
 
-        # Build list of channel mentions/names to display
         channels_list = category.channels
         if channels_list:
             channels_text = "\n".join([f"• {c.mention} (`#{c.name}`)" for c in channels_list])
         else:
             channels_text = "• *No channels inside this category.*"
 
-        # Determine roles to delete if delete_roles is enabled
         if delete_roles:
             def is_valid_custom_role(r: discord.Role) -> bool:
                 return (
@@ -344,12 +354,10 @@ class DivisionManager(commands.Cog):
                     and not r.is_integration()
                 )
 
-            # 1. User manual overrides if provided
             for role in (division_staff_role, staff_role, member_role):
                 if is_valid_custom_role(role):
                     roles_to_delete.add(role)
 
-            # 2. Auto-detect roles assigned to the category if no manual roles passed
             if not roles_to_delete:
                 for target in category.overwrites.keys():
                     if isinstance(target, discord.Role) and is_valid_custom_role(target):

@@ -58,8 +58,12 @@ class ThreadKeeper(commands.Cog):
     async def _unarchive_guild_threads(self, guild: discord.Guild, context_reason: str):
         """Sweeps and unarchives valid inactive threads across text channels in the guild."""
         mappings = load_thread_mappings()
+        
+        # Safe extraction ensuring item is a dictionary before calling .get()
         mapped_role_thread_ids = {
-            item.get("thread_id") for item in mappings if item.get("thread_id")
+            item.get("thread_id")
+            for item in mappings
+            if isinstance(item, dict) and item.get("thread_id")
         }
 
         for channel in guild.text_channels:
@@ -143,7 +147,9 @@ class ThreadKeeper(commands.Cog):
 
                 mappings = load_thread_mappings()
                 mapped_role_thread_ids = {
-                    item.get("thread_id") for item in mappings if item.get("thread_id")
+                    item.get("thread_id")
+                    for item in mappings
+                    if isinstance(item, dict) and item.get("thread_id")
                 }
                 is_linked = after.id in mapped_role_thread_ids
 

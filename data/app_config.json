@@ -1,0 +1,13 @@
+{
+    "1530922810275528774": {
+        "panel_channel_id": 1535795884737171526,
+        "panel_message_id": 1535932531067588661,
+        "open_channel_id": 1535795641727324190,
+        "approved_channel_id": 1535795717472256063,
+        "denied_channel_id": 1535795777031508029,
+        "member_role_ids": [
+            1533544055743709264
+        ],
+        "remove_role_ids": []
+    }
+}

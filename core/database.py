@@ -1,63 +1,132 @@
 import json
+import logging
 from pathlib import Path
 
-DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "thread_mappings.json"
+logger = logging.getLogger(__name__)
 
-def load_data() -> dict:
-    """Loads the entire JSON structure."""
-    if not DATA_FILE.exists():
-        return {"mappings": [], "dashboard": {"channel_id": None, "message_id": None}}
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
+HUB_DASHBOARD_FILE = DATA_DIR / "hub_dashboard.json"
+HUB_DEFAULTS_FILE = DATA_DIR / "hub_defaults.json"
+THREAD_MAPPINGS_FILE = DATA_DIR / "thread_mappings.json"
+DIVISION_RECORDS_FILE = DATA_DIR / "division_records.json"
+APP_CONFIG_FILE = DATA_DIR / "app_config.json"
+APP_THREADS_FILE = DATA_DIR / "app_threads.json"
+
+
+def load_hub_dashboard_config() -> dict:
+    if not HUB_DASHBOARD_FILE.exists():
+        return {}
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            
-            # Migration check: Convert old dict format to list format if needed
-            mappings = data.get("mappings", [])
-            if isinstance(mappings, dict):
-                newList = []
-                for role_id, val in mappings.items():
-                    if isinstance(val, dict):
-                        newList.append({
-                            "role_id": int(role_id),
-                            "thread_id": val.get("thread_id"),
-                            "created_by": val.get("created_by")
-                        })
-                    else:
-                        newList.append({
-                            "role_id": int(role_id),
-                            "thread_id": val,
-                            "created_by": None
-                        })
-                data["mappings"] = newList
-                
-            return data
-    except (json.JSONDecodeError, OSError):
-        return {"mappings": [], "dashboard": {"channel_id": None, "message_id": None}}
+        with open(HUB_DASHBOARD_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading hub dashboard config: {e}")
+        return {}
 
-def save_data(data: dict) -> None:
-    """Saves the entire dictionary to JSON."""
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
 
-def load_thread_mappings() -> list:
-    mappings = load_data().get("mappings", [])
-    if isinstance(mappings, dict):
+def save_hub_dashboard_config(data: dict) -> None:
+    try:
+        with open(HUB_DASHBOARD_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving hub dashboard config: {e}")
+
+
+def load_hub_defaults() -> dict:
+    if not HUB_DEFAULTS_FILE.exists():
+        return {}
+    try:
+        with open(HUB_DEFAULTS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading hub defaults: {e}")
+        return {}
+
+
+def save_hub_defaults(data: dict) -> None:
+    try:
+        with open(HUB_DEFAULTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving hub defaults: {e}")
+
+
+def load_thread_mappings() -> list[dict]:
+    if not THREAD_MAPPINGS_FILE.exists():
         return []
-    return mappings
+    try:
+        with open(THREAD_MAPPINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading thread mappings: {e}")
+        return []
 
-def save_thread_mappings(mappings: list) -> None:
-    data = load_data()
-    data["mappings"] = mappings
-    save_data(data)
 
-def load_dashboard_config() -> dict:
-    return load_data().get("dashboard", {"channel_id": None, "message_id": None})
+def save_thread_mappings(data: list[dict]) -> None:
+    try:
+        with open(THREAD_MAPPINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving thread mappings: {e}")
 
-def save_dashboard_config(channel_id: int | None, message_id: int | None = None) -> None:
-    data = load_data()
-    data["dashboard"] = {
-        "channel_id": channel_id,
-        "message_id": message_id
-    }
-    save_data(data)
+
+def load_division_records() -> list[dict]:
+    if not DIVISION_RECORDS_FILE.exists():
+        return []
+    try:
+        with open(DIVISION_RECORDS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading division records: {e}")
+        return []
+
+
+def save_division_records(data: list[dict]) -> None:
+    try:
+        with open(DIVISION_RECORDS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving division records: {e}")
+
+
+# -------------------------------------------------------------------------
+# APPLICATION SYSTEM CONFIG & THREAD MAPPINGS
+# -------------------------------------------------------------------------
+def load_app_config() -> dict:
+    if not APP_CONFIG_FILE.exists():
+        return {}
+    try:
+        with open(APP_CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading application config: {e}")
+        return {}
+
+
+def save_app_config(data: dict) -> None:
+    try:
+        with open(APP_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving application config: {e}")
+
+
+def load_app_threads() -> list[dict]:
+    if not APP_THREADS_FILE.exists():
+        return []
+    try:
+        with open(APP_THREADS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading app threads: {e}")
+        return []
+
+
+def save_app_threads(data: list[dict]) -> None:
+    try:
+        with open(APP_THREADS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving app threads: {e}")

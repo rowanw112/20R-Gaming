@@ -11,6 +11,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 import discord
+from discord import app_commands
 from discord.ext import commands
 import config
 
@@ -60,7 +61,7 @@ class CommunityBot(commands.Bot):
         )
 
     async def setup_hook(self):
-        # Auto-load all cogs inside /cogs directory
+        # 1. Load all cogs inside /cogs directory
         cogs_dir = ROOT_DIR / "cogs"
         if cogs_dir.exists():
             for file in cogs_dir.glob("*.py"):
@@ -72,16 +73,17 @@ class CommunityBot(commands.Bot):
                     except Exception as e:
                         logging.error(f"Failed to load Cog {cog_name}: {e}")
 
-        # Sync application slash commands
-        if getattr(config, "GUILD_IDS", None):
-            for guild_id in config.GUILD_IDS:
+        # 2. Sync application slash commands
+        guild_ids = getattr(config, "GUILD_IDS", [])
+        if guild_ids:
+            for guild_id in guild_ids:
                 guild = discord.Object(id=guild_id)
-                self.tree.copy_global_to(guild=guild)
-                await self.tree.sync(guild=guild)
-                logging.info(f"Synced slash commands to Guild ID: {guild_id}")
+                self.tree.copy_global_to(guild=guild)  # Copies cog global commands into guild tree
+                synced = await self.tree.sync(guild=guild)
+                logging.info(f"Synced {len(synced)} command(s) instantly to Guild ID: {guild_id}")
         else:
-            await self.tree.sync()
-            logging.info("Synced slash commands globally across all guilds.")
+            synced = await self.tree.sync()
+            logging.info(f"Synced {len(synced)} command(s) globally across all guilds.")
 
     async def on_ready(self):
         logging.info("--------------------------------------------------")
@@ -95,6 +97,62 @@ async def main():
         raise ValueError("DISCORD_TOKEN is missing from your config or .env file!")
     
     bot = CommunityBot()
+
+    # -------------------------------------------------------------------------
+    # SLASH COMMAND MANAGEMENT
+    # -------------------------------------------------------------------------
+    @bot.tree.command(name="sync", description="Force sync slash commands across guilds.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def sync_slash(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild_ids = getattr(config, "GUILD_IDS", [])
+        
+        if guild_ids:
+            for guild_id in guild_ids:
+                guild = discord.Object(id=guild_id)
+                bot.tree.copy_global_to(guild=guild)  # Copies global commands to guild tree on manual sync
+                synced = await bot.tree.sync(guild=guild)
+                await interaction.followup.send(
+                    f"✅ Synced `{len(synced)}` slash commands to Guild `{guild_id}`!",
+                    ephemeral=True,
+                )
+        else:
+            synced = await bot.tree.sync()
+            await interaction.followup.send(
+                f"✅ Globally synced `{len(synced)}` slash commands!",
+                ephemeral=True,
+            )
+
+    @bot.tree.command(name="reload", description="Reload all cogs on the fly without restarting.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def reload_slash(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        cogs_dir = ROOT_DIR / "cogs"
+        reloaded = []
+        failed = []
+
+        if cogs_dir.exists():
+            for file in cogs_dir.glob("*.py"):
+                if not file.name.startswith("__"):
+                    cog_name = file.stem
+                    try:
+                        await bot.reload_extension(f"cogs.{cog_name}")
+                        reloaded.append(f"`{cog_name}`")
+                    except commands.ExtensionNotLoaded:
+                        try:
+                            await bot.load_extension(f"cogs.{cog_name}")
+                            reloaded.append(f"`{cog_name}` *(new)*")
+                        except Exception as e:
+                            failed.append(f"`{cog_name}` ({e})")
+                    except Exception as e:
+                        failed.append(f"`{cog_name}` ({e})")
+
+        msg = f"🔄 **Reloaded Cogs ({len(reloaded)}):** {', '.join(reloaded) if reloaded else 'None'}"
+        if failed:
+            msg += f"\n❌ **Failed ({len(failed)}):** {', '.join(failed)}"
+
+        await interaction.followup.send(msg, ephemeral=True)
+
     async with bot:
         await bot.start(config.TOKEN)
 
