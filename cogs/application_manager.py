@@ -1,4 +1,6 @@
 import logging
+import os
+import json
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -13,6 +15,17 @@ from core.database import (
 logger = logging.getLogger(__name__)
 
 BANNER_URL = "https://media.discordapp.net/attachments/617358398245175297/1535770704874573925/20r.png?ex=6a78f96d&is=6a77a7ed&hm=6255b39be423ec5febeecf8a37e467af88d1034c0e21dfdfb6f3a7d89de53797&=&format=webp&quality=lossless&width=1280&height=720"
+RANK_CONFIG_FILE = "data/rank_system_config.json"
+
+
+def load_rank_config() -> dict:
+    if not os.path.exists(RANK_CONFIG_FILE):
+        return {}
+    with open(RANK_CONFIG_FILE, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
 
 
 def is_staff(interaction: discord.Interaction) -> bool:
@@ -26,13 +39,10 @@ def is_staff(interaction: discord.Interaction) -> bool:
     ):
         return True
 
-    config = load_app_config().get(str(interaction.guild.id), {})
-    grant_role_ids = config.get("member_role_ids", [])
-    if not grant_role_ids and config.get("member_role_id"):
-        grant_role_ids = [config.get("member_role_id")]
-
+    rank_cfg = load_rank_config().get(str(interaction.guild.id), {})
+    staff_ids = rank_cfg.get("staff_role_ids", [])
     user_role_ids = [r.id for r in interaction.user.roles]
-    return any(rid in user_role_ids for rid in grant_role_ids)
+    return any(rid in user_role_ids for rid in staff_ids)
 
 
 # -------------------------------------------------------------------------
@@ -442,7 +452,8 @@ async def _archive_compressed_helper(
 
 
 async def _process_approval_roles(guild: discord.Guild, applicant_id: int):
-    config = load_app_config().get(str(guild.id), {})
+    """Pulls Recruit role directly from central Rank System configuration."""
+    rank_cfg = load_rank_config().get(str(guild.id), {})
     member = guild.get_member(applicant_id)
     if not member:
         logger.error(f"[AppManager] Member with ID {applicant_id} not found in guild.")
@@ -452,65 +463,42 @@ async def _process_approval_roles(guild: discord.Guild, applicant_id: int):
     if not bot_member.guild_permissions.manage_roles:
         logger.error(f"[AppManager] CRITICAL: Bot lacks 'Manage Roles' permission in guild '{guild.name}'!")
 
-    # Grant Roles
-    grant_role_ids = config.get("member_role_ids", [])
-    if not grant_role_ids and config.get("member_role_id"):
-        grant_role_ids = [config.get("member_role_id")]
+    recruit_role_id = rank_cfg.get("recruit_role_id")
+    recruit_role = guild.get_role(recruit_role_id) if recruit_role_id else None
 
-    granted_roles = [guild.get_role(rid) for rid in grant_role_ids if guild.get_role(rid)]
-    
-    valid_grant_roles = []
-    for role in granted_roles:
-        if role and role.position < bot_member.top_role.position:
-            if role.managed:
-                logger.error(f"[AppManager] Role '{role.name}' ({role.id}) is a Managed/Integration role and cannot be assigned.")
-            else:
-                valid_grant_roles.append(role)
-        else:
-            logger.warning(
-                f"[AppManager] Role '{role.name if role else 'Unknown'}' (Pos: {role.position if role else 'N/A'}) "
-                f"is higher than/equal to Bot Top Role '{bot_member.top_role.name}' (Pos: {bot_member.top_role.position})."
-            )
+    if not recruit_role:
+        logger.error(f"[AppManager] No Recruit Role configured in Rank System for guild '{guild.name}'.")
+        return []
 
-    if valid_grant_roles:
-        try:
-            await member.add_roles(*valid_grant_roles, reason="Application Approved")
-            logger.info(f"[AppManager] Successfully assigned roles {[r.name for r in valid_grant_roles]} to {member.display_name}.")
-        except discord.HTTPException as e:
-            logger.error(f"[AppManager] Failed to add roles {[r.name for r in valid_grant_roles]}: {e}")
+    if recruit_role.position >= bot_member.top_role.position:
+        logger.warning(
+            f"[AppManager] Recruit Role '{recruit_role.name}' (Pos: {recruit_role.position}) "
+            f"is higher than Bot Top Role '{bot_member.top_role.name}' (Pos: {bot_member.top_role.position})."
+        )
+        return []
 
-    # Remove Roles
-    remove_role_ids = config.get("remove_role_ids", [])
-    remove_roles = [guild.get_role(rid) for rid in remove_role_ids if guild.get_role(rid)]
-    
-    valid_remove_roles = [
-        r for r in remove_roles if r and r.position < bot_member.top_role.position and not r.managed
-    ]
+    try:
+        await member.add_roles(recruit_role, reason="Application Approved — Granted Recruit Role")
+        logger.info(f"[AppManager] Successfully assigned Recruit role '{recruit_role.name}' to {member.display_name}.")
+    except discord.HTTPException as e:
+        logger.error(f"[AppManager] Failed to add Recruit role: {e}")
+        return []
 
-    if valid_remove_roles:
-        try:
-            await member.remove_roles(*valid_remove_roles, reason="Application Approved")
-            logger.info(f"[AppManager] Successfully removed roles {[r.name for r in valid_remove_roles]} from {member.display_name}.")
-        except discord.HTTPException as e:
-            logger.error(f"[AppManager] Failed to remove roles {[r.name for r in valid_remove_roles]}: {e}")
+    try:
+        dm_embed = discord.Embed(
+            title="🎉 Application Approved — Welcome to 20R!",
+            description=(
+                f"Congratulations {member.display_name}! Your membership application for **20R Gaming** "
+                f"has been **Approved**!\n\n"
+                f"You have been granted the **{recruit_role.name}** role. Head over to the server to check out your division channels!"
+            ),
+            color=discord.Color.green(),
+        )
+        await member.send(embed=dm_embed)
+    except discord.HTTPException:
+        pass
 
-    if valid_grant_roles:
-        role_names = ", ".join([f"**{r.name}**" for r in valid_grant_roles])
-        try:
-            dm_embed = discord.Embed(
-                title="🎉 Application Approved — Welcome to 20R!",
-                description=(
-                    f"Congratulations {member.display_name}! Your membership application for **20R Gaming** "
-                    "has been **Approved**!\n\n"
-                    f"You have been granted the following role(s): {role_names}. Head over to the server to check out your new division channels!"
-                ),
-                color=discord.Color.green(),
-            )
-            await member.send(embed=dm_embed)
-        except discord.HTTPException:
-            pass
-
-    return valid_grant_roles
+    return [recruit_role]
 
 
 # -------------------------------------------------------------------------
@@ -569,7 +557,7 @@ class ThreadReviewView(discord.ui.View):
         await _process_approval_roles(guild, self.applicant_id)
 
         await interaction.followup.send(
-            "✅ Application approved, roles updated, and thread deleted!",
+            "✅ Application approved, granted Recruit role, and thread deleted!",
             ephemeral=True,
         )
 
@@ -680,7 +668,7 @@ class ApplicationReviewView(discord.ui.View):
         await _process_approval_roles(guild, applicant_id)
 
         await interaction.followup.send(
-            "✅ Application approved, roles updated, and logged!",
+            "✅ Application approved, granted Recruit role, and logged!",
             ephemeral=True,
         )
 
@@ -769,23 +757,27 @@ class ApplicationPanelLauncher(discord.ui.View):
     ):
         guild = interaction.guild
         member = interaction.user
+        rank_cfg = load_rank_config().get(str(guild.id), {})
+
+        recruit_role_id = rank_cfg.get("recruit_role_id")
+        member_role_id = rank_cfg.get("member_role_id")
+        rank_role_ids = rank_cfg.get("rank_role_ids", [])
+
+        blocked_ids = set(rank_role_ids)
+        if recruit_role_id:
+            blocked_ids.add(recruit_role_id)
+        if member_role_id:
+            blocked_ids.add(member_role_id)
+
+        user_role_ids = {r.id for r in member.roles}
+        if blocked_ids.intersection(user_role_ids):
+            await interaction.response.send_message(
+                "❌ You are already an official member or recruit of 20R!",
+                ephemeral=True,
+            )
+            return
+
         config = load_app_config().get(str(guild.id), {})
-
-        grant_role_ids = config.get("member_role_ids", [])
-        if not grant_role_ids and config.get("member_role_id"):
-            grant_role_ids = [config.get("member_role_id")]
-
-        if grant_role_ids:
-            member_roles = [
-                guild.get_role(rid) for rid in grant_role_ids if guild.get_role(rid)
-            ]
-            if any(role in member.roles for role in member_roles if role):
-                await interaction.response.send_message(
-                    "❌ You are already an official member of 20R!",
-                    ephemeral=True,
-                )
-                return
-
         open_channel_id = config.get("open_channel_id")
         if open_channel_id:
             open_channel = guild.get_channel(open_channel_id)
@@ -962,12 +954,6 @@ class ApplicationManager(commands.Cog):
         open_channel: discord.TextChannel,
         approved_channel: discord.TextChannel,
         denied_channel: discord.TextChannel,
-        member_role_1: discord.Role,
-        member_role_2: discord.Role | None = None,
-        member_role_3: discord.Role | None = None,
-        remove_role_1: discord.Role | None = None,
-        remove_role_2: discord.Role | None = None,
-        remove_role_3: discord.Role | None = None,
         panel_channel: discord.TextChannel | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
@@ -980,12 +966,6 @@ class ApplicationManager(commands.Cog):
                 ephemeral=True,
             )
             return
-
-        grant_roles = [r for r in [member_role_1, member_role_2, member_role_3] if r]
-        grant_role_ids = [r.id for r in grant_roles]
-
-        remove_roles = [r for r in [remove_role_1, remove_role_2, remove_role_3] if r]
-        remove_role_ids = [r.id for r in remove_roles]
 
         embed = discord.Embed(
             title="🛡️ Join the 20R Gaming Community",
@@ -1015,24 +995,15 @@ class ApplicationManager(commands.Cog):
             "open_channel_id": open_channel.id,
             "approved_channel_id": approved_channel.id,
             "denied_channel_id": denied_channel.id,
-            "member_role_ids": grant_role_ids,
-            "remove_role_ids": remove_role_ids,
         }
         save_app_config(all_configs)
-
-        grant_str = ", ".join([r.mention for r in grant_roles])
-        remove_str = (
-            ", ".join([r.mention for r in remove_roles]) if remove_roles else "None"
-        )
 
         await interaction.followup.send(
             f"✅ **Application Panel Configured & Posted!**\n"
             f"• **Posted In:** {target_panel_channel.mention}\n"
             f"• **Open Applications Target:** {open_channel.mention}\n"
             f"• **Approved Logs Target:** {approved_channel.mention}\n"
-            f"• **Denied Logs Target:** {denied_channel.mention}\n"
-            f"• **Member Roles Granted:** {grant_str}\n"
-            f"• **Roles Removed:** {remove_str}",
+            f"• **Denied Logs Target:** {denied_channel.mention}",
             ephemeral=True,
         )
 

@@ -97,7 +97,6 @@ class ThreadSync(commands.Cog):
             grouped_games: dict[str, dict[str, any]] = {}
             standalone_links: list[tuple[discord.Role, discord.Thread]] = []
 
-            # Keywords table for grouping games together
             GAME_MAP = {
                 "bf6": "BF6",
                 "rl": "Rocket League",
@@ -106,6 +105,7 @@ class ThreadSync(commands.Cog):
                 "squad": "Squad",
                 "wardogs": "Wardogs",
                 "helldivers": "Helldivers",
+                "wow": "World of Warcraft",
             }
 
             for entry in mappings:
@@ -125,7 +125,6 @@ class ThreadSync(commands.Cog):
 
                 raw_role_name = role.name.lower()
 
-                # Search for game keyword match
                 matched_game = None
                 for key, display_name in GAME_MAP.items():
                     if key in raw_role_name:
@@ -143,7 +142,6 @@ class ThreadSync(commands.Cog):
                     grouped_games[matched_game]["roles"].add(role)
                     grouped_games[matched_game]["threads"].add(thread)
 
-                    # Mark if any linked role for this game explicitly uses "Division"
                     if "division" in raw_role_name:
                         grouped_games[matched_game]["has_division_role"] = True
                 else:
@@ -162,7 +160,6 @@ class ThreadSync(commands.Cog):
                     f"**Hub Threads:** {thread_mentions}"
                 )
 
-                # Only include "Division" in header if a division role is linked
                 header_title = (
                     f"🎮 {game_name} Division"
                     if data["has_division_role"]
@@ -314,6 +311,76 @@ class ThreadSync(commands.Cog):
     # -------------------------------------------------------------------------
     # LISTENERS & COMMANDS
     # -------------------------------------------------------------------------
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Listens for role changes and dynamically adds/removes members from mapped threads."""
+        if before.roles == after.roles or after.bot:
+            return
+
+        mappings = load_thread_mappings()
+        if not mappings:
+            return
+
+        added_roles = set(after.roles) - set(before.roles)
+        removed_roles = set(before.roles) - set(after.roles)
+
+        guild = after.guild
+
+        # Handle Roles Added
+        if added_roles:
+            added_role_ids = {r.id for r in added_roles}
+            for entry in mappings:
+                if not isinstance(entry, dict):
+                    continue
+                r_id = entry.get("role_id")
+                t_id = entry.get("thread_id")
+
+                if r_id in added_role_ids and t_id:
+                    thread = await self.get_or_fetch_thread(guild, int(t_id))
+                    if isinstance(thread, discord.Thread):
+                        try:
+                            await thread.add_user(after)
+                            logger.info(
+                                f"➕ Added {after.display_name} to thread '{thread.name}' due to role gain."
+                            )
+                        except discord.HTTPException as e:
+                            logger.error(
+                                f"Failed to add {after.display_name} to thread '{thread.name}': {e}"
+                            )
+
+        # Handle Roles Removed
+        if removed_roles:
+            removed_role_ids = {r.id for r in removed_roles}
+            for entry in mappings:
+                if not isinstance(entry, dict):
+                    continue
+                r_id = entry.get("role_id")
+                t_id = entry.get("thread_id")
+
+                if r_id in removed_role_ids and t_id:
+                    # Check if member still has ANY other role mapped to this SAME thread
+                    other_mapped_role_ids = {
+                        item.get("role_id")
+                        for item in mappings
+                        if isinstance(item, dict) and item.get("thread_id") == t_id
+                    }
+                    user_has_other_mapped_role = any(
+                        r.id in other_mapped_role_ids for r in after.roles
+                    )
+
+                    if not user_has_other_mapped_role:
+                        thread = await self.get_or_fetch_thread(guild, int(t_id))
+                        if isinstance(thread, discord.Thread):
+                            try:
+                                await thread.remove_user(after)
+                                logger.info(
+                                    f"➖ Removed {after.display_name} from thread '{thread.name}' due to role loss."
+                                )
+                            except discord.HTTPException as e:
+                                logger.error(
+                                    f"Failed to remove {after.display_name} from thread '{thread.name}': {e}"
+                                )
+
     @commands.Cog.listener()
     async def on_ready(self):
         if self._sync_lock.locked():
