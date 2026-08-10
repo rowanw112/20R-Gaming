@@ -19,11 +19,9 @@ logger = logging.getLogger(__name__)
 COLOR_DIVISION_STAFF = discord.Color(0xE67E22)
 COLOR_STAFF = discord.Color(0xF1C40F)
 COLOR_MEMBER = discord.Color(0xAD1457)
+COLOR_PUBLIC_GAME = discord.Color(0x2ECC71)
 
 
-# -------------------------------------------------------------------------
-# TEARDOWN CONFIRMATION VIEW
-# -------------------------------------------------------------------------
 class ConfirmModalDeleteView(discord.ui.View):
     def __init__(
         self,
@@ -56,7 +54,6 @@ class ConfirmModalDeleteView(discord.ui.View):
         deleted_channels = 0
         deleted_roles = 0
 
-        # 1. Delete Threads & remove database mappings
         mappings = load_thread_mappings()
         mapped_thread_ids = {t.id for t in self.threads_to_delete}
 
@@ -77,7 +74,6 @@ class ConfirmModalDeleteView(discord.ui.View):
             ]
             save_thread_mappings(new_mappings)
 
-        # 2. Delete Text Channels
         for channel in self.channels_to_delete:
             try:
                 await channel.delete(
@@ -87,7 +83,6 @@ class ConfirmModalDeleteView(discord.ui.View):
             except discord.HTTPException as e:
                 logger.error(f"Failed to delete channel {channel.name}: {e}")
 
-        # 3. Delete Roles
         for role in self.roles_to_delete:
             try:
                 await role.delete(
@@ -97,14 +92,12 @@ class ConfirmModalDeleteView(discord.ui.View):
             except discord.HTTPException as e:
                 logger.error(f"Failed to delete role {role.name}: {e}")
 
-        # 4. Remove entry from division_records.json
         records = load_division_records()
         new_records = [
             r for r in records if r.get("member_role_id") != self.member_role_id
         ]
         save_division_records(new_records)
 
-        # Refresh dashboards if cogs loaded
         thread_sync_cog = interaction.client.get_cog("ThreadSync")
         if thread_sync_cog:
             await thread_sync_cog.update_dashboard(interaction.guild)
@@ -128,21 +121,23 @@ class ConfirmModalDeleteView(discord.ui.View):
         self.stop()
 
 
-# -------------------------------------------------------------------------
-# DIVISION MANAGER COG
-# -------------------------------------------------------------------------
 class ModalDivisionManager(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Automatically refreshes the Hub Dashboard embed whenever the bot starts up."""
+        """Automatically refreshes the Hub Dashboard embed across all connected servers on startup."""
+        logger.info("[ModalDivisionManager] 🔄 Refreshing Hub Dashboards on startup...")
         for guild in self.bot.guilds:
-            await self.update_dashboard(guild)
+            try:
+                await self.update_dashboard(guild)
+            except Exception as e:
+                logger.error(f"[ModalDivisionManager] Failed to update dashboard for '{guild.name}': {e}")
+        logger.info("[ModalDivisionManager] ✅ Hub Dashboards refreshed!")
 
     async def update_dashboard(self, guild: discord.Guild):
-        """Builds and edits the live-updating embed displaying default hub setup."""
+        """Builds, posts, or edits the live-updating embed displaying default hub setup."""
         dash_config = load_hub_dashboard_config()
         channel_id = dash_config.get("channel_id")
         message_id = dash_config.get("message_id")
@@ -163,7 +158,7 @@ class ModalDivisionManager(commands.Cog):
         defaults = load_hub_defaults()
 
         embed = discord.Embed(
-            title="⚙️ Division Setup — Default Hub Configuration",
+            title="⚙️ Division Setup — Default Hub & Role Configuration",
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow(),
         )
@@ -171,8 +166,8 @@ class ModalDivisionManager(commands.Cog):
         embed.add_field(
             name="📖 How It Works",
             value=(
-                "When creating a division with `/createdivision_hub`, any unselected channel/category "
-                "options will automatically fall back to these defaults.\n\n"
+                "When creating a division with `/createdivision_hub`, unselected channels, "
+                "categories, and role section anchors will fall back to these defaults.\n\n"
                 "• **Update Defaults:** `/set_hub_defaults`\n"
                 "• **Set Dashboard Channel:** `/set_hub_dashboard_channel`"
             ),
@@ -184,6 +179,12 @@ class ModalDivisionManager(commands.Cog):
                 return "❌ *Not Set*"
             ch = guild.get_channel(int(c_id))
             return ch.mention if ch else f"`ID: {c_id}` *(Not found)*"
+
+        def fmt_role(r_id):
+            if not r_id:
+                return "❌ *Not Set*"
+            r = guild.get_role(int(r_id))
+            return r.mention if r else f"`ID: {r_id}` *(Not found)*"
 
         embed.add_field(
             name="📍 Default Hub Destinations",
@@ -197,55 +198,103 @@ class ModalDivisionManager(commands.Cog):
             inline=False,
         )
 
+        embed.add_field(
+            name="🏷️ Default Role Category Anchors",
+            value=(
+                f"• **Public Roles Anchor (`─── 𝐏𝐮𝐛𝐥𝐢𝐜 ───`):** {fmt_role(defaults.get('public_role_category_id'))}\n"
+                f"• **Division Staff Anchor (`─── 𝐃𝐢𝐯𝐢𝐬𝐢𝐨𝐧 𝐒𝐭𝐚𝐟𝐟 ───`):** {fmt_role(defaults.get('div_staff_role_category_id'))}\n"
+                f"• **Game Staff Anchor (`─── 𝐆𝐚𝐦𝐞 𝐒𝐭𝐚𝐟𝐟 ───`):** {fmt_role(defaults.get('game_staff_role_category_id'))}\n"
+                f"• **Division Roles Anchor (`─── 𝐃𝐢𝐯𝐢𝐬𝐢𝐨𝐧𝐬 ───`):** {fmt_role(defaults.get('member_role_category_id'))}"
+            ),
+            inline=False,
+        )
+
         embed.set_footer(text="Auto-updates live when defaults are changed")
 
-        try:
-            if message_id:
-                try:
-                    msg = await channel.fetch_message(message_id)
-                    await msg.edit(embed=embed)
-                    return
-                except discord.NotFound:
-                    pass
-
-            msg = await channel.send(embed=embed)
+        # 1. Try editing existing message
+        if message_id:
             try:
-                await msg.pin(reason="Live Hub Defaults Dashboard")
+                msg = await channel.fetch_message(message_id)
+                await msg.edit(embed=embed)
+                return
+            except (discord.NotFound, discord.HTTPException):
+                logger.warning(f"[ModalDivisionManager] Stale dashboard message ID ({message_id}) in #{channel.name}. Reposting...")
+
+        # 2. If message_id is missing or stale, post a fresh dashboard message
+        try:
+            posted_msg = await channel.send(embed=embed)
+            try:
+                await posted_msg.pin(reason="Live Hub Defaults Dashboard")
             except (discord.Forbidden, discord.HTTPException):
                 pass
 
             dash_config["channel_id"] = channel.id
-            dash_config["message_id"] = msg.id
+            dash_config["message_id"] = posted_msg.id
             save_hub_dashboard_config(dash_config)
+            logger.info(f"[ModalDivisionManager] Posted new Hub Dashboard in #{channel.name} ({posted_msg.id})")
 
         except (discord.Forbidden, discord.HTTPException) as e:
-            logger.error(f"❌ Error updating Hub Dashboard in #{channel.name}: {e}")
+            logger.error(f"❌ Error posting Hub Dashboard in #{channel.name}: {e}")
+
+    async def _anchor_roles_to_divider(
+        self, guild: discord.Guild, divider_role: discord.Role, roles_to_place: list[discord.Role]
+    ):
+        """Positions roles directly beneath a divider role in the server's role hierarchy."""
+        if not divider_role or not roles_to_place:
+            return
+
+        try:
+            all_roles = sorted(guild.roles, key=lambda r: r.position, reverse=True)
+            filtered_roles = [r for r in all_roles if r not in roles_to_place]
+
+            if divider_role not in filtered_roles:
+                return
+
+            pivot_index = filtered_roles.index(divider_role) + 1
+            new_role_order = (
+                filtered_roles[:pivot_index]
+                + roles_to_place
+                + filtered_roles[pivot_index:]
+            )
+
+            positions = {}
+            total_count = len(new_role_order)
+            for idx, r in enumerate(new_role_order):
+                if not r.is_default():
+                    positions[r] = total_count - idx
+
+            await guild.edit_role_positions(positions=positions)
+            logger.info(f"Anchored roles {[r.name for r in roles_to_place]} below '{divider_role.name}'")
+
+        except (discord.HTTPException, ValueError) as e:
+            logger.error(f"Failed to anchor roles beneath {divider_role.name}: {e}")
+
+    async def _grant_category_access(
+        self, category: discord.CategoryChannel, roles: list[discord.Role]
+    ):
+        if not category:
+            return
+
+        everyone_overwrite = category.overwrites_for(category.guild.default_role)
+        if everyone_overwrite.view_channel is False:
+            for role in roles:
+                current_overwrite = category.overwrites_for(role)
+                current_overwrite.view_channel = True
+                await category.set_permissions(
+                    role,
+                    overwrite=current_overwrite,
+                    reason="Granting category view access for division roles",
+                )
 
     async def _adjust_category_permissions(
         self, channel: discord.TextChannel, roles: list[discord.Role]
     ):
-        """Helper: Checks if target channel is restricted, and modifies Category permissions instead of breaking sync."""
-        category = channel.category
-        if not category:
-            return
+        if channel and channel.category:
+            await self._grant_category_access(channel.category, roles)
 
-        everyone_overwrite = channel.overwrites_for(channel.guild.default_role)
-        if everyone_overwrite.view_channel is False:
-            for role in roles:
-                current_cat_overwrite = category.overwrites_for(role)
-                current_cat_overwrite.view_channel = True
-                await category.set_permissions(
-                    role,
-                    overwrite=current_cat_overwrite,
-                    reason="Granting category view access for division hub thread",
-                )
-
-    # -------------------------------------------------------------------------
-    # COMMANDS
-    # -------------------------------------------------------------------------
     @app_commands.command(
         name="set_hub_defaults",
-        description="Set default channels/categories for division creation.",
+        description="Set default channels, categories, and role placement anchors for division creation.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def set_hub_defaults(
@@ -256,23 +305,36 @@ class ModalDivisionManager(commands.Cog):
         staff_hub: discord.TextChannel = None,
         info_category: discord.CategoryChannel = None,
         news_category: discord.CategoryChannel = None,
+        public_role_category: discord.Role = None,
+        div_staff_role_category: discord.Role = None,
+        game_staff_role_category: discord.Role = None,
+        member_role_category: discord.Role = None,
     ):
         defaults = load_hub_defaults()
 
-        if chat_hub:
+        if chat_hub is not None:
             defaults["chat_hub_id"] = chat_hub.id
-        if clips_hub:
+        if clips_hub is not None:
             defaults["clips_hub_id"] = clips_hub.id
-        if staff_hub:
+        if staff_hub is not None:
             defaults["staff_hub_id"] = staff_hub.id
-        if info_category:
+        if info_category is not None:
             defaults["info_category_id"] = info_category.id
-        if news_category:
+        if news_category is not None:
             defaults["news_category_id"] = news_category.id
+        if public_role_category is not None:
+            defaults["public_role_category_id"] = public_role_category.id
+        if div_staff_role_category is not None:
+            defaults["div_staff_role_category_id"] = div_staff_role_category.id
+        if game_staff_role_category is not None:
+            defaults["game_staff_role_category_id"] = game_staff_role_category.id
+        if member_role_category is not None:
+            defaults["member_role_category_id"] = member_role_category.id
 
         save_hub_defaults(defaults)
         await interaction.response.send_message(
-            "✅ Default hub configurations updated!", ephemeral=True
+            "✅ Default hub configurations updated! Existing unmentioned settings were retained.",
+            ephemeral=True
         )
         await self.update_dashboard(interaction.guild)
 
@@ -325,18 +387,9 @@ class ModalDivisionManager(commands.Cog):
 
     @app_commands.command(
         name="createdivision_hub",
-        description="Create a division utilizing private hub threads and dedicated info channels.",
+        description="Create a division utilizing private hub threads, channels, and anchored roles.",
     )
     @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(
-        game_name="Full game name (e.g. 'World of Warcraft')",
-        short_name="Short abbreviation (Optional)",
-        chat_hub="Override default chat hub channel",
-        clips_hub="Override default clips hub channel",
-        staff_hub="Override default staff hub channel",
-        info_category="Override default Info category",
-        news_category="Override default News category",
-    )
     async def create_division_hub(
         self,
         interaction: discord.Interaction,
@@ -347,6 +400,10 @@ class ModalDivisionManager(commands.Cog):
         staff_hub: discord.TextChannel = None,
         info_category: discord.CategoryChannel = None,
         news_category: discord.CategoryChannel = None,
+        public_role_category: discord.Role = None,
+        div_staff_role_category: discord.Role = None,
+        game_staff_role_category: discord.Role = None,
+        member_role_category: discord.Role = None,
     ):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
@@ -355,181 +412,106 @@ class ModalDivisionManager(commands.Cog):
 
         defaults = load_hub_defaults()
 
-        # Resolve Targets
-        target_chat_hub = chat_hub or (
-            guild.get_channel(defaults.get("chat_hub_id"))
-            if defaults.get("chat_hub_id")
-            else None
-        )
-        target_clips_hub = clips_hub or (
-            guild.get_channel(defaults.get("clips_hub_id"))
-            if defaults.get("clips_hub_id")
-            else None
-        )
-        target_staff_hub = staff_hub or (
-            guild.get_channel(defaults.get("staff_hub_id"))
-            if defaults.get("staff_hub_id")
-            else None
-        )
-        target_info_cat = info_category or (
-            guild.get_channel(defaults.get("info_category_id"))
-            if defaults.get("info_category_id")
-            else None
-        )
-        target_news_cat = news_category or (
-            guild.get_channel(defaults.get("news_category_id"))
-            if defaults.get("news_category_id")
-            else None
-        )
+        target_chat_hub = chat_hub or (guild.get_channel(defaults.get("chat_hub_id")) if defaults.get("chat_hub_id") else None)
+        target_clips_hub = clips_hub or (guild.get_channel(defaults.get("clips_hub_id")) if defaults.get("clips_hub_id") else None)
+        target_staff_hub = staff_hub or (guild.get_channel(defaults.get("staff_hub_id")) if defaults.get("staff_hub_id") else None)
+        target_info_cat = info_category or (guild.get_channel(defaults.get("info_category_id")) if defaults.get("info_category_id") else None)
+        target_news_cat = news_category or (guild.get_channel(defaults.get("news_category_id")) if defaults.get("news_category_id") else None)
+
+        target_pub_cat = public_role_category or (guild.get_role(defaults.get("public_role_category_id")) if defaults.get("public_role_category_id") else None)
+        target_div_staff_cat = div_staff_role_category or (guild.get_role(defaults.get("div_staff_role_category_id")) if defaults.get("div_staff_role_category_id") else None)
+        target_game_staff_cat = game_staff_role_category or (guild.get_role(defaults.get("game_staff_role_category_id")) if defaults.get("game_staff_role_category_id") else None)
+        target_mem_cat = member_role_category or (guild.get_role(defaults.get("member_role_category_id")) if defaults.get("member_role_category_id") else None)
 
         missing = []
-        if not target_chat_hub:
-            missing.append("Chat Hub Channel")
-        if not target_clips_hub:
-            missing.append("Clips Hub Channel")
-        if not target_staff_hub:
-            missing.append("Staff Hub Channel")
-        if not target_info_cat:
-            missing.append("Info Category")
-        if not target_news_cat:
-            missing.append("News Category")
+        if not target_chat_hub: missing.append("Chat Hub Channel")
+        if not target_clips_hub: missing.append("Clips Hub Channel")
+        if not target_staff_hub: missing.append("Staff Hub Channel")
+        if not target_info_cat: missing.append("Info Category")
+        if not target_news_cat: missing.append("News Category")
 
         if missing:
             await interaction.followup.send(
-                f"❌ **Missing Configuration Target(s):** {', '.join(missing)}\n"
-                f"Please specify them in the command or set default fallbacks using `/set_hub_defaults`.",
+                f"❌ **Missing Target(s):** {', '.join(missing)}\nSpecify in command or set defaults via `/set_hub_defaults`.",
                 ephemeral=True,
             )
             return
 
-        clean_game = game_name.strip()
-        clean_short = short_name.strip() if short_name else clean_game
+        # Ensure Proper Title Casing
+        clean_game = game_name.strip().title()
+        clean_short = short_name.strip().title() if short_name else clean_game
         slug_short = clean_short.lower().replace(" ", "-")
 
         try:
             # 1. Create Roles
-            div_staff_role = await guild.create_role(
-                name=f"{clean_short} Division Staff",
-                color=COLOR_DIVISION_STAFF,
-                mentionable=True,
-            )
-            staff_role = await guild.create_role(
-                name=f"{clean_short} Staff",
-                color=COLOR_STAFF,
-                mentionable=True,
-            )
-            member_role = await guild.create_role(
-                name=f"{clean_short} Division",
-                color=COLOR_MEMBER,
-                mentionable=True,
-            )
+            game_role = await guild.create_role(name=f"{clean_short}", color=COLOR_PUBLIC_GAME, mentionable=True)
+            div_staff_role = await guild.create_role(name=f"{clean_short} Division Staff", color=COLOR_DIVISION_STAFF, mentionable=True)
+            staff_role = await guild.create_role(name=f"{clean_short} Staff", color=COLOR_STAFF, mentionable=True)
+            member_role = await guild.create_role(name=f"{clean_short} Division", color=COLOR_MEMBER, mentionable=True)
 
-            # 2. Adjust Category Permissions
-            await self._adjust_category_permissions(
-                target_staff_hub, [div_staff_role, staff_role]
-            )
+            # 2. Anchor Roles Under Specified Category Dividers
+            if target_pub_cat:
+                await self._anchor_roles_to_divider(guild, target_pub_cat, [game_role])
+            if target_div_staff_cat:
+                await self._anchor_roles_to_divider(guild, target_div_staff_cat, [div_staff_role])
+            if target_game_staff_cat:
+                await self._anchor_roles_to_divider(guild, target_game_staff_cat, [staff_role])
+            if target_mem_cat:
+                await self._anchor_roles_to_divider(guild, target_mem_cat, [member_role])
 
-            # 3. Create Dedicated Channels
+            all_div_roles = [game_role, member_role, staff_role, div_staff_role]
+
+            # 3. Category Access Overwrites
+            await self._grant_category_access(target_info_cat, all_div_roles)
+            await self._grant_category_access(target_news_cat, all_div_roles)
+            await self._adjust_category_permissions(target_chat_hub, all_div_roles)
+            await self._adjust_category_permissions(target_clips_hub, all_div_roles)
+            await self._adjust_category_permissions(target_staff_hub, [div_staff_role, staff_role])
+
+            # 4. Create Dedicated Text Channels
             read_only_overwrites = {
-                guild.default_role: discord.PermissionOverwrite(
-                    view_channel=True, send_messages=False
-                ),
-                member_role: discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=False,
-                    add_reactions=True,
-                ),
-                staff_role: discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True
-                ),
-                div_staff_role: discord.PermissionOverwrite(
-                    view_channel=True, send_messages=True
-                ),
+                guild.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
+                game_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, add_reactions=True),
+                member_role: discord.PermissionOverwrite(view_channel=True, send_messages=False, add_reactions=True),
+                staff_role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+                div_staff_role: discord.PermissionOverwrite(view_channel=True, send_messages=True),
             }
 
-            info_chan = await guild.create_text_channel(
-                name=f"{slug_short}-info",
-                category=target_info_cat,
-                overwrites=read_only_overwrites,
-            )
-            announcements_chan = await guild.create_text_channel(
-                name=f"{slug_short}-announcements",
-                category=target_news_cat,
-                overwrites=read_only_overwrites,
-            )
+            info_chan = await guild.create_text_channel(name=f"{slug_short}-info", category=target_info_cat, overwrites=read_only_overwrites)
+            announcements_chan = await guild.create_text_channel(name=f"{slug_short}-announcements", category=target_news_cat, overwrites=read_only_overwrites)
 
-            # 4. Create Private Threads & Save DB Mappings
+            # 5. Create Private Threads & Save DB Mappings
             mappings = load_thread_mappings()
 
-            chat_thread = await target_chat_hub.create_thread(
-                name=f"{slug_short}-chat",
-                type=discord.ChannelType.private_thread,
-                invitable=False,
-            )
-            mappings.append(
-                {
-                    "role_id": member_role.id,
-                    "thread_id": chat_thread.id,
-                    "created_by": interaction.user.id,
-                }
-            )
+            chat_thread = await target_chat_hub.create_thread(name=f"{slug_short}-chat", type=discord.ChannelType.private_thread, invitable=False)
+            mappings.append({"role_id": game_role.id, "thread_id": chat_thread.id, "created_by": interaction.user.id})
+            mappings.append({"role_id": member_role.id, "thread_id": chat_thread.id, "created_by": interaction.user.id})
 
-            clips_thread = await target_clips_hub.create_thread(
-                name=f"{slug_short}-clips",
-                type=discord.ChannelType.private_thread,
-                invitable=False,
-            )
-            mappings.append(
-                {
-                    "role_id": member_role.id,
-                    "thread_id": clips_thread.id,
-                    "created_by": interaction.user.id,
-                }
-            )
+            clips_thread = await target_clips_hub.create_thread(name=f"{slug_short}-clips", type=discord.ChannelType.private_thread, invitable=False)
+            mappings.append({"role_id": game_role.id, "thread_id": clips_thread.id, "created_by": interaction.user.id})
+            mappings.append({"role_id": member_role.id, "thread_id": clips_thread.id, "created_by": interaction.user.id})
 
-            staff_thread = await target_staff_hub.create_thread(
-                name=f"{slug_short}-staff",
-                type=discord.ChannelType.private_thread,
-                invitable=False,
-            )
-            mappings.append(
-                {
-                    "role_id": div_staff_role.id,
-                    "thread_id": staff_thread.id,
-                    "created_by": interaction.user.id,
-                }
-            )
-            mappings.append(
-                {
-                    "role_id": staff_role.id,
-                    "thread_id": staff_thread.id,
-                    "created_by": interaction.user.id,
-                }
-            )
+            staff_thread = await target_staff_hub.create_thread(name=f"{slug_short}-staff", type=discord.ChannelType.private_thread, invitable=False)
+            mappings.append({"role_id": div_staff_role.id, "thread_id": staff_thread.id, "created_by": interaction.user.id})
+            mappings.append({"role_id": staff_role.id, "thread_id": staff_thread.id, "created_by": interaction.user.id})
 
             save_thread_mappings(mappings)
 
-            # 5. SAVE COMPLETE DIVISION RECORD
+            # 6. Save Complete Division Record
             records = load_division_records()
-            records.append(
-                {
-                    "game_name": clean_game,
-                    "short_name": clean_short,
-                    "member_role_id": member_role.id,
-                    "staff_role_id": staff_role.id,
-                    "div_staff_role_id": div_staff_role.id,
-                    "info_channel_id": info_chan.id,
-                    "news_channel_id": announcements_chan.id,
-                    "thread_ids": [
-                        chat_thread.id,
-                        clips_thread.id,
-                        staff_thread.id,
-                    ],
-                }
-            )
+            records.append({
+                "game_name": clean_game,
+                "short_name": clean_short,
+                "game_role_id": game_role.id,
+                "member_role_id": member_role.id,
+                "staff_role_id": staff_role.id,
+                "div_staff_role_id": div_staff_role.id,
+                "info_channel_id": info_chan.id,
+                "news_channel_id": announcements_chan.id,
+                "thread_ids": [chat_thread.id, clips_thread.id, staff_thread.id],
+            })
             save_division_records(records)
 
-            # Trigger ThreadSync dashboard update
             thread_sync_cog = self.bot.get_cog("ThreadSync")
             if thread_sync_cog:
                 await thread_sync_cog.update_dashboard(guild)
@@ -541,9 +523,10 @@ class ModalDivisionManager(commands.Cog):
             embed.add_field(
                 name="Roles Created",
                 value=(
-                    f"• {div_staff_role.mention}\n"
+                    f"• {game_role.mention} *(Public Game Role)*\n"
+                    f"• {member_role.mention}\n"
                     f"• {staff_role.mention}\n"
-                    f"• {member_role.mention}"
+                    f"• {div_staff_role.mention}"
                 ),
                 inline=False,
             )
@@ -566,9 +549,7 @@ class ModalDivisionManager(commands.Cog):
 
         except Exception as e:
             logger.error(f"Error creating hub division: {e}")
-            await interaction.followup.send(
-                f"❌ Creation failed: `{e}`", ephemeral=True
-            )
+            await interaction.followup.send(f"❌ Creation failed: `{e}`", ephemeral=True)
 
     @app_commands.command(
         name="deletedivision_hub",
@@ -582,7 +563,6 @@ class ModalDivisionManager(commands.Cog):
         info_channel: discord.TextChannel = None,
         announcements_channel: discord.TextChannel = None,
     ):
-        """Looks up division record by member_role_id and builds comprehensive teardown list."""
         guild = interaction.guild
         records = load_division_records()
 
@@ -597,67 +577,38 @@ class ModalDivisionManager(commands.Cog):
         roles_to_delete = [member_role]
 
         if target_record:
-            # Load Threads from JSON Record
             for t_id in target_record.get("thread_ids", []):
                 t = guild.get_thread(t_id)
-                if t:
-                    threads_to_delete.append(t)
+                if t: threads_to_delete.append(t)
 
-            # Load Text Channels from JSON Record (or fallback to options)
             info_id = target_record.get("info_channel_id")
             news_id = target_record.get("news_channel_id")
 
-            if info_id:
-                c = guild.get_channel(info_id)
-                if c:
-                    channels_to_delete.append(c)
-            elif info_channel:
-                channels_to_delete.append(info_channel)
+            if info_id and guild.get_channel(info_id): channels_to_delete.append(guild.get_channel(info_id))
+            elif info_channel: channels_to_delete.append(info_channel)
 
-            if news_id:
-                c = guild.get_channel(news_id)
-                if c:
-                    channels_to_delete.append(c)
-            elif announcements_channel:
-                channels_to_delete.append(announcements_channel)
+            if news_id and guild.get_channel(news_id): channels_to_delete.append(guild.get_channel(news_id))
+            elif announcements_channel: channels_to_delete.append(announcements_channel)
 
-            # Load Staff Roles from JSON Record
-            s_id = target_record.get("staff_role_id")
-            ds_id = target_record.get("div_staff_role_id")
-            if s_id:
-                r = guild.get_role(s_id)
-                if r:
-                    roles_to_delete.append(r)
-            if ds_id:
-                r = guild.get_role(ds_id)
-                if r:
-                    roles_to_delete.append(r)
+            for rid_key in ("game_role_id", "staff_role_id", "div_staff_role_id"):
+                rid = target_record.get(rid_key)
+                if rid and guild.get_role(rid):
+                    roles_to_delete.append(guild.get_role(rid))
 
         else:
-            # Fallback for legacy divisions created before JSON records existed
             mappings = load_thread_mappings()
-            target_thread_ids = {
-                m.get("thread_id")
-                for m in mappings
-                if m.get("role_id") == member_role.id
-            }
+            target_thread_ids = {m.get("thread_id") for m in mappings if m.get("role_id") == member_role.id}
             for t_id in target_thread_ids:
-                thread = guild.get_thread(t_id)
-                if thread:
-                    threads_to_delete.append(thread)
+                if guild.get_thread(t_id): threads_to_delete.append(guild.get_thread(t_id))
 
-            if info_channel:
-                channels_to_delete.append(info_channel)
-            if announcements_channel:
-                channels_to_delete.append(announcements_channel)
+            if info_channel: channels_to_delete.append(info_channel)
+            if announcements_channel: channels_to_delete.append(announcements_channel)
 
             base_name = member_role.name.replace(" Division", "")
-            for r_name in (f"{base_name} Division Staff", f"{base_name} Staff"):
+            for r_name in (base_name, f"{base_name} Division Staff", f"{base_name} Staff"):
                 r = discord.utils.get(guild.roles, name=r_name)
-                if r:
-                    roles_to_delete.append(r)
+                if r: roles_to_delete.append(r)
 
-        # Deduplicate lists
         threads_to_delete = list({t.id: t for t in threads_to_delete}.values())
         channels_to_delete = list({c.id: c for c in channels_to_delete}.values())
         roles_to_delete = list({r.id: r for r in roles_to_delete}.values())
@@ -670,14 +621,8 @@ class ModalDivisionManager(commands.Cog):
             user=interaction.user,
         )
 
-        threads_fmt = (
-            "\n".join([f"• 🔒 {t.mention}" for t in threads_to_delete])
-            or "• *None found*"
-        )
-        chans_fmt = (
-            "\n".join([f"• {c.mention}" for c in channels_to_delete])
-            or "• *None found*"
-        )
+        threads_fmt = "\n".join([f"• 🔒 {t.mention}" for t in threads_to_delete]) or "• *None found*"
+        chans_fmt = "\n".join([f"• {c.mention}" for c in channels_to_delete]) or "• *None found*"
         roles_fmt = "\n".join([f"• {r.mention}" for r in roles_to_delete])
 
         await interaction.response.send_message(

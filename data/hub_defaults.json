@@ -6,5 +6,9 @@
     "news_category_id": 1534282828202770464,
     "staff_role_anchor_id": 1534875447375040592,
     "rank_role_anchor_id": 1534875456543785061,
-    "division_role_anchor_id": 1534875456543785061
+    "division_role_anchor_id": 1534875456543785061,
+    "public_role_category_id": 1536372625826386011,
+    "div_staff_role_category_id": 1536372637977288714,
+    "member_role_category_id": 1534875456543785061,
+    "game_staff_role_category_id": 1536379483433472060
 }

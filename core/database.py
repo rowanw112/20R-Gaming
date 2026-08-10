@@ -8,6 +8,7 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 HUB_DASHBOARD_FILE = DATA_DIR / "hub_dashboard.json"
+THREAD_SYNC_DASHBOARD_FILE = DATA_DIR / "thread_sync_dashboard.json"
 HUB_DEFAULTS_FILE = DATA_DIR / "hub_defaults.json"
 THREAD_MAPPINGS_FILE = DATA_DIR / "thread_mappings.json"
 DIVISION_RECORDS_FILE = DATA_DIR / "division_records.json"
@@ -15,6 +16,9 @@ APP_CONFIG_FILE = DATA_DIR / "app_config.json"
 APP_THREADS_FILE = DATA_DIR / "app_threads.json"
 
 
+# -------------------------------------------------------------------------
+# HUB SETUP DASHBOARD CONFIG
+# -------------------------------------------------------------------------
 def load_hub_dashboard_config() -> dict:
     if not HUB_DASHBOARD_FILE.exists():
         return {}
@@ -34,6 +38,31 @@ def save_hub_dashboard_config(data: dict) -> None:
         logger.error(f"Error saving hub dashboard config: {e}")
 
 
+# -------------------------------------------------------------------------
+# THREAD SYNC DASHBOARD CONFIG (SEPARATE FROM HUB DASHBOARD)
+# -------------------------------------------------------------------------
+def load_thread_sync_dashboard_config() -> dict:
+    if not THREAD_SYNC_DASHBOARD_FILE.exists():
+        return {}
+    try:
+        with open(THREAD_SYNC_DASHBOARD_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading thread sync dashboard config: {e}")
+        return {}
+
+
+def save_thread_sync_dashboard_config(data: dict) -> None:
+    try:
+        with open(THREAD_SYNC_DASHBOARD_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving thread sync dashboard config: {e}")
+
+
+# -------------------------------------------------------------------------
+# HUB DEFAULTS, MAPPINGS & DIVISIONS
+# -------------------------------------------------------------------------
 def load_hub_defaults() -> dict:
     if not HUB_DEFAULTS_FILE.exists():
         return {}

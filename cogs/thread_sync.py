@@ -5,9 +5,10 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.database import (
-    load_hub_dashboard_config,
+    load_division_records,
+    load_thread_sync_dashboard_config,
+    save_thread_sync_dashboard_config,
     load_thread_mappings,
-    save_hub_dashboard_config,
     save_thread_mappings,
 )
 
@@ -42,7 +43,7 @@ class ThreadSync(commands.Cog):
 
     async def update_dashboard(self, guild: discord.Guild):
         """Builds and edits the live-updating embed grouped by normalized Game Hubs and Standalone links."""
-        dash_config = load_hub_dashboard_config()
+        dash_config = load_thread_sync_dashboard_config()
         channel_id = dash_config.get("channel_id")
         message_id = dash_config.get("message_id")
 
@@ -60,6 +61,16 @@ class ThreadSync(commands.Cog):
             return
 
         mappings = load_thread_mappings()
+        division_records = load_division_records()
+
+        div_role_to_game: dict[int, tuple[str, bool]] = {}
+        for rec in division_records:
+            if isinstance(rec, dict):
+                game_title = rec.get("game_name") or rec.get("short_name") or "Division"
+                for key in ("game_role_id", "member_role_id", "staff_role_id", "div_staff_role_id"):
+                    rid = rec.get(key)
+                    if rid:
+                        div_role_to_game[int(rid)] = (game_title, True)
 
         embed = discord.Embed(
             title="📌 Role ➔ Thread Auto-Sync Dashboard",
@@ -123,31 +134,35 @@ class ThreadSync(commands.Cog):
                 if not role or not thread:
                     continue
 
-                raw_role_name = role.name.lower()
-
                 matched_game = None
-                for key, display_name in GAME_MAP.items():
-                    if key in raw_role_name:
-                        matched_game = display_name
-                        break
+                has_div = False
+
+                if int(r_id) in div_role_to_game:
+                    matched_game, has_div = div_role_to_game[int(r_id)]
+                else:
+                    raw_role_name = role.name.lower()
+                    for key, display_name in GAME_MAP.items():
+                        if key in raw_role_name:
+                            matched_game = display_name
+                            has_div = "division" in raw_role_name
+                            break
 
                 if matched_game:
                     if matched_game not in grouped_games:
                         grouped_games[matched_game] = {
                             "roles": set(),
                             "threads": set(),
-                            "has_division_role": False,
+                            "has_division_role": has_div,
                         }
 
                     grouped_games[matched_game]["roles"].add(role)
                     grouped_games[matched_game]["threads"].add(thread)
-
-                    if "division" in raw_role_name:
+                    if has_div:
                         grouped_games[matched_game]["has_division_role"] = True
                 else:
                     standalone_links.append((role, thread))
 
-            # 1. Render Grouped Game Hubs
+            # Render Grouped Game Hubs
             for game_name, data in sorted(grouped_games.items()):
                 roles_list = sorted(list(data["roles"]), key=lambda r: r.name)
                 threads_list = sorted(list(data["threads"]), key=lambda t: t.name)
@@ -162,7 +177,7 @@ class ThreadSync(commands.Cog):
 
                 header_title = (
                     f"🎮 {game_name} Division"
-                    if data["has_division_role"]
+                    if data["has_division_role"] and not game_name.endswith("Division")
                     else f"🎮 {game_name}"
                 )
 
@@ -172,7 +187,7 @@ class ThreadSync(commands.Cog):
                     inline=False,
                 )
 
-            # 2. Render Non-Game / Standalone Thread Links
+            # Render Standalone Links
             if standalone_links:
                 custom_lines = [
                     f"• {role.mention} ➔ 🔒 {thread.mention}"
@@ -203,7 +218,7 @@ class ThreadSync(commands.Cog):
 
             dash_config["channel_id"] = channel.id
             dash_config["message_id"] = msg.id
-            save_hub_dashboard_config(dash_config)
+            save_thread_sync_dashboard_config(dash_config)
 
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.error(f"❌ Dashboard update error in #{channel.name}: {e}")
@@ -286,7 +301,7 @@ class ThreadSync(commands.Cog):
                 logger.error(f"Could not fetch members for thread {thread.name}: {e}")
                 continue
 
-            # 1. Add missing role members
+            # Add missing role members
             missing_user_ids = role_member_ids - existing_user_ids
             for user_id in missing_user_ids:
                 try:
@@ -297,7 +312,7 @@ class ThreadSync(commands.Cog):
                         retry_after = float(e.response.headers.get("Retry-After", 5))
                         await asyncio.sleep(retry_after)
 
-            # 2. Remove extra members
+            # Remove extra members
             extra_user_ids = existing_user_ids - target_member_ids - {self.bot.user.id}
             for user_id in extra_user_ids:
                 try:
@@ -308,9 +323,6 @@ class ThreadSync(commands.Cog):
                         retry_after = float(e.response.headers.get("Retry-After", 5))
                         await asyncio.sleep(retry_after)
 
-    # -------------------------------------------------------------------------
-    # LISTENERS & COMMANDS
-    # -------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Listens for role changes and dynamically adds/removes members from mapped threads."""
@@ -326,7 +338,6 @@ class ThreadSync(commands.Cog):
 
         guild = after.guild
 
-        # Handle Roles Added
         if added_roles:
             added_role_ids = {r.id for r in added_roles}
             for entry in mappings:
@@ -348,7 +359,6 @@ class ThreadSync(commands.Cog):
                                 f"Failed to add {after.display_name} to thread '{thread.name}': {e}"
                             )
 
-        # Handle Roles Removed
         if removed_roles:
             removed_role_ids = {r.id for r in removed_roles}
             for entry in mappings:
@@ -358,7 +368,6 @@ class ThreadSync(commands.Cog):
                 t_id = entry.get("thread_id")
 
                 if r_id in removed_role_ids and t_id:
-                    # Check if member still has ANY other role mapped to this SAME thread
                     other_mapped_role_ids = {
                         item.get("role_id")
                         for item in mappings
@@ -530,7 +539,7 @@ class ThreadSync(commands.Cog):
             )
             return
 
-        dash_config = load_hub_dashboard_config()
+        dash_config = load_thread_sync_dashboard_config()
         old_channel_id = dash_config.get("channel_id")
         old_message_id = dash_config.get("message_id")
 
@@ -547,7 +556,7 @@ class ThreadSync(commands.Cog):
 
         dash_config["channel_id"] = target_channel.id
         dash_config["message_id"] = None
-        save_hub_dashboard_config(dash_config)
+        save_thread_sync_dashboard_config(dash_config)
 
         await self.update_dashboard(interaction.guild)
 
@@ -563,7 +572,7 @@ class ThreadSync(commands.Cog):
     async def remove_sync_channel(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        dash_config = load_hub_dashboard_config()
+        dash_config = load_thread_sync_dashboard_config()
         channel_id = dash_config.get("channel_id")
         message_id = dash_config.get("message_id")
 
@@ -586,7 +595,7 @@ class ThreadSync(commands.Cog):
 
         dash_config["channel_id"] = None
         dash_config["message_id"] = None
-        save_hub_dashboard_config(dash_config)
+        save_thread_sync_dashboard_config(dash_config)
 
         await interaction.followup.send(
             "✅ Sync dashboard channel removed and embed cleared!",
