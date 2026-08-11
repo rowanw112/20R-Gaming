@@ -35,19 +35,20 @@ class Welcome(commands.Cog):
             logger.warning(f"Join event in unconfigured guild: {member.guild.name} ({guild_id})")
             return
 
-        # 1. Assign Default Join Roles (Stranger Role)
-        roles_to_add = []
-        for role_id in guild_config.get("DEFAULT_ROLES", []):
-            role = member.guild.get_role(role_id)
-            if role and role not in member.roles:
-                roles_to_add.append(role)
+        # 1. Assign Default Join Roles (Stranger Role) — SKIPPED FOR BOTS
+        if not member.bot:
+            roles_to_add = []
+            for role_id in guild_config.get("DEFAULT_ROLES", []):
+                role = member.guild.get_role(role_id)
+                if role and role not in member.roles:
+                    roles_to_add.append(role)
 
-        if roles_to_add:
-            try:
-                await member.add_roles(*roles_to_add, reason="Auto-assigned on server join")
-                logger.info(f"Assigned default join roles to {member.display_name}")
-            except discord.HTTPException as e:
-                logger.error(f"Failed to assign default roles to {member.display_name}: {e}")
+            if roles_to_add:
+                try:
+                    await member.add_roles(*roles_to_add, reason="Auto-assigned on server join")
+                    logger.info(f"Assigned default join roles to {member.display_name}")
+                except discord.HTTPException as e:
+                    logger.error(f"Failed to assign default roles to {member.display_name}: {e}")
 
         # 2. Send Welcome Embed Card
         channel_id = guild_config.get("WELCOME_CHANNEL_ID")

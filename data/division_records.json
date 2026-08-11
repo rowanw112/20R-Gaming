@@ -2,44 +2,17 @@
     {
         "game_name": "Wardogs",
         "short_name": "Wardogs",
-        "member_role_id": 1535470874797412432,
-        "staff_role_id": 1535470873677406239,
-        "div_staff_role_id": 1535470872540741665,
-        "info_channel_id": 1535470877725163600,
-        "news_channel_id": 1535470878748311613,
+        "game_role_id": 1536481499958747147,
+        "member_role_id": 1536481958471929886,
+        "staff_role_id": 1536481956735352854,
+        "div_staff_role_id": 1536481955598835886,
+        "info_channel_id": 1536481975060402263,
+        "news_channel_id": 1536481977002229830,
         "thread_ids": [
-            1535470879645892629,
-            1535470880522768404,
-            1535470881428471848
-        ]
-    },
-    {
-        "game_name": "World of Warcraft",
-        "short_name": "WoW",
-        "member_role_id": 1536109931000762531,
-        "staff_role_id": 1536109929860042956,
-        "div_staff_role_id": 1536109928941625414,
-        "info_channel_id": 1536109936852078622,
-        "news_channel_id": 1536109938596778105,
-        "thread_ids": [
-            1536109939620057160,
-            1536109940576485426,
-            1536109941780127794
-        ]
-    },
-    {
-        "game_name": "Runescape",
-        "short_name": "Runescape",
-        "game_role_id": 1536380847769255946,
-        "member_role_id": 1536380850315337779,
-        "staff_role_id": 1536380849639919716,
-        "div_staff_role_id": 1536380848696201296,
-        "info_channel_id": 1536380867256254564,
-        "news_channel_id": 1536380868401303653,
-        "thread_ids": [
-            1536380869475045578,
-            1536380870863098018,
-            1536380872297816154
-        ]
+            1536481505965244469,
+            1536481984560504932,
+            1536481985936105574
+        ],
+        "is_restrictive": false
     }
 ]

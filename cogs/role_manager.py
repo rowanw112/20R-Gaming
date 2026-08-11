@@ -10,7 +10,6 @@ from discord.ext import commands
 logger = logging.getLogger(__name__)
 
 CONFIG_FILE = "data/rank_system_config.json"
-DATA_FILE = "guild_categories.json"
 
 
 def load_json(filepath: str) -> dict:
@@ -262,8 +261,9 @@ class PrefixCategorySelect(discord.ui.Select):
                 ))
 
         basic_ids = cfg.get("basic_role_ids", [])
+        visitor_ids = cfg.get("visitor_role_ids", [])
         recruit_id = cfg.get("recruit_role_id")
-        combined_basic = list(set(basic_ids + ([recruit_id] if recruit_id else [])))
+        combined_basic = list(set(basic_ids + visitor_ids + ([recruit_id] if recruit_id else [])))
         if combined_basic:
             options.append(discord.SelectOption(label="🔰 Basic & Recruit Roles", value="basic", description="Configure Basic/Recruit Role Tags"))
 
@@ -299,8 +299,9 @@ class PrefixCategorySelect(discord.ui.Select):
         elif choice == "basic":
             cat_label = "Basic & Recruit Roles"
             b_ids = self.cfg.get("basic_role_ids", [])
+            v_ids = self.cfg.get("visitor_role_ids", [])
             rec_id = self.cfg.get("recruit_role_id")
-            combined = list(set(b_ids + ([rec_id] if rec_id else [])))
+            combined = list(set(b_ids + v_ids + ([rec_id] if rec_id else [])))
             target_roles = [self.guild.get_role(rid) for rid in combined if self.guild.get_role(rid)]
 
         if not target_roles:
@@ -373,148 +374,6 @@ class RankDashboardView(discord.ui.View):
 
 
 # -------------------------------------------------------------------------
-# CATEGORY ROLE CREATION SELECT
-# -------------------------------------------------------------------------
-class RoleCategorySelect(discord.ui.Select):
-    def __init__(
-        self,
-        categories: list[discord.Role],
-        role_list_str: str,
-        hoist: bool,
-        mentionable: bool,
-    ):
-        self.categories = categories
-        self.role_list_str = role_list_str
-        self.hoist = hoist
-        self.mentionable = mentionable
-
-        options = [
-            discord.SelectOption(
-                label=role.name,
-                value=str(role.id),
-                description=f"Category Divider (Pos: {role.position})",
-            )
-            for role in categories
-        ]
-        options.append(
-            discord.SelectOption(
-                label="No Category (Default creation at bottom)",
-                value="none",
-            )
-        )
-
-        super().__init__(
-            placeholder="Select category (roles will be placed at the bottom of it)...",
-            min_values=1,
-            max_values=1,
-            options=options,
-        )
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-
-        raw_entries = re.split(r"[,\n]+", self.role_list_str)
-        parsed_entries = [e.strip() for e in raw_entries if e.strip()]
-
-        selected_id = self.values[0]
-        target_category_role = None
-        next_category_role = None
-
-        if selected_id != "none":
-            for idx, r in enumerate(self.categories):
-                if str(r.id) == selected_id:
-                    target_category_role = r
-                    if idx + 1 < len(self.categories):
-                        next_category_role = self.categories[idx + 1]
-                    break
-
-        created_roles = []
-        failed_roles = []
-
-        for entry in parsed_entries:
-            if "|" in entry:
-                parts = entry.split("|", 1)
-                name = parts[0].strip()
-                color_hex = parts[1].strip().lstrip("#")
-                try:
-                    color = discord.Color(int(color_hex, 16))
-                except ValueError:
-                    color = discord.Color.default()
-            else:
-                name = entry.strip()
-                color = discord.Color.default()
-
-            try:
-                role = await guild.create_role(
-                    name=name,
-                    color=color,
-                    hoist=self.hoist,
-                    mentionable=self.mentionable,
-                    permissions=discord.Permissions.none(),
-                    reason=f"Bulk creation by {interaction.user}",
-                )
-                created_roles.append(role)
-                await asyncio.sleep(0.3)
-            except discord.HTTPException as e:
-                failed_roles.append(f"`{name}` ({e.text})")
-
-        if created_roles and target_category_role:
-            try:
-                all_roles = sorted(guild.roles, key=lambda r: r.position, reverse=True)
-                pivot_role = (
-                    next_category_role if next_category_role else target_category_role
-                )
-                existing_roles = [r for r in all_roles if r not in created_roles]
-
-                insert_idx = (
-                    existing_roles.index(pivot_role)
-                    if next_category_role
-                    else existing_roles.index(pivot_role) + 1
-                )
-                new_role_order = (
-                    existing_roles[:insert_idx]
-                    + created_roles
-                    + existing_roles[insert_idx:]
-                )
-
-                position_payload = {}
-                total_count = len(new_role_order)
-                for idx, r in enumerate(new_role_order):
-                    if not r.is_default():
-                        position_payload[r] = total_count - idx
-
-                await guild.edit_role_positions(positions=position_payload)
-
-            except (discord.HTTPException, ValueError) as e:
-                logger.error(f"[RoleManager] Failed to set role positions: {e}", exc_info=True)
-
-        msg = f"✅ **Created {len(created_roles)} role(s)**"
-        if target_category_role:
-            msg += f" at the bottom of **{target_category_role.name}**"
-        msg += ":\n" + "\n".join(f"• {r.mention}" for r in created_roles)
-
-        if failed_roles:
-            msg += "\n\n❌ **Failed:**\n" + "\n".join(failed_roles)
-
-        await interaction.followup.send(msg, ephemeral=True)
-
-
-class RoleCategoryView(discord.ui.View):
-    def __init__(
-        self,
-        categories: list[discord.Role],
-        role_list_str: str,
-        hoist: bool,
-        mentionable: bool,
-    ):
-        super().__init__(timeout=120)
-        self.add_item(
-            RoleCategorySelect(categories, role_list_str, hoist, mentionable)
-        )
-
-
-# -------------------------------------------------------------------------
 # MAIN ROLE MANAGER COG
 # -------------------------------------------------------------------------
 class RoleManager(commands.Cog):
@@ -543,6 +402,16 @@ class RoleManager(commands.Cog):
         if member.id == member.guild.owner_id:
             return
 
+        user_role_ids = {r.id for r in member.roles}
+
+        # ---------------------------------------------------------------------
+        # 1. CUSTOM PREFIX BYPASS CHECK
+        # ---------------------------------------------------------------------
+        custom_prefix_role_id = cfg.get("custom_prefix_role_id")
+        if custom_prefix_role_id and custom_prefix_role_id in user_role_ids:
+            # User holds Custom-Prefix role -> Do not touch their nickname!
+            return
+
         prefixes = cfg.get("role_prefixes", {})
         if not prefixes:
             return
@@ -551,27 +420,37 @@ class RoleManager(commands.Cog):
         rank_ids = cfg.get("rank_role_ids", [])
         recruit_id = cfg.get("recruit_role_id")
         basic_ids = cfg.get("basic_role_ids", [])
+        visitor_ids = cfg.get("visitor_role_ids", [])
 
+        # Priority order for Tag Prefixes
         priority_order = []
         priority_order.extend(staff_ids)
         priority_order.extend(rank_ids)
         if recruit_id:
             priority_order.append(recruit_id)
         priority_order.extend(basic_ids)
+        priority_order.extend(visitor_ids)
+
+        # ---------------------------------------------------------------------
+        # 2. CHECK IF USER HOLDS A MAPPED ROLE
+        # ---------------------------------------------------------------------
+        has_mapped_role = any(rid in user_role_ids for rid in priority_order)
+        if not has_mapped_role:
+            return
 
         active_prefix = None
-        user_role_ids = {r.id for r in member.roles}
-
         for rid in priority_order:
             if rid in user_role_ids and str(rid) in prefixes:
                 active_prefix = prefixes[str(rid)]
                 break
 
+        if not active_prefix:
+            return
+
         current_nick = member.display_name
         clean_name = re.sub(r"^\[.*?\]\s*|^\(.*?\)\s*", "", current_nick).strip()
 
-        target_nick = f"{active_prefix} {clean_name}" if active_prefix else clean_name
-        target_nick = target_nick[:32]
+        target_nick = f"{active_prefix} {clean_name}"[:32]
 
         if current_nick != target_nick:
             try:
@@ -614,7 +493,10 @@ class RoleManager(commands.Cog):
         prefixes = cfg.get("role_prefixes", {})
 
         basic_ids = cfg.get("basic_role_ids", [])
-        basic_roles = [guild.get_role(rid) for rid in basic_ids if guild.get_role(rid)]
+        visitor_ids = cfg.get("visitor_role_ids", [])
+        combined_basic_ids = list(set(basic_ids + visitor_ids))
+
+        basic_roles = [guild.get_role(rid) for rid in combined_basic_ids if guild.get_role(rid)]
         basic_formatted = [
             f"{r.mention} [`{prefixes.get(str(r.id), 'None')}`]" for r in basic_roles
         ]
@@ -630,6 +512,9 @@ class RoleManager(commands.Cog):
 
         member_role = guild.get_role(cfg.get("member_role_id", 0))
         member_str = member_role.mention if member_role else "the required Member role"
+
+        custom_prefix_role = guild.get_role(cfg.get("custom_prefix_role_id", 0))
+        custom_prefix_str = custom_prefix_role.mention if custom_prefix_role else "`Not Configured`"
 
         staff_ids = cfg.get("staff_role_ids", [])
         staff_roles = [guild.get_role(rid) for rid in staff_ids if guild.get_role(rid)]
@@ -681,9 +566,10 @@ class RoleManager(commands.Cog):
         embed.add_field(
             name="🆔 Configured Server Roles & Prefixes",
             value=(
-                f"• **Basic Roles:** {basic_str}\n"
+                f"• **Basic & Visitor Roles:** {basic_str}\n"
                 f"• **Recruit Role:** {recruit_str}\n"
                 f"• **Member Requirement:** {member_str}\n"
+                f"• **Custom Prefix Bypass:** {custom_prefix_str}\n"
                 f"• **Staff Hierarchy (Highest ➔ Lowest):** {staff_str}\n"
                 f"• **Rank Hierarchy (Highest ➔ Lowest):** {ranks_str}"
             ),
@@ -697,6 +583,7 @@ class RoleManager(commands.Cog):
                 "• `basic_roles` — Pass space or comma separated mentions (e.g. `@Visitor @Friend`).\n"
                 "• `recruit_role` — Select the role granted upon passing application.\n"
                 "• `member_role` — Select the required full member role (e.g. `@20R Member`).\n"
+                "• `custom_prefix_role` — Select the role that allows custom nicknames without bot override.\n"
                 "• `staff_roles` — List all staff roles (e.g. `@Moderator @Admin`).\n"
                 "• `rank_roles` — List all dynamic ranks (e.g. `@Rank I @Rank II ...`).\n\n"
                 "*Note: You can update a single option while leaving others omitted—the bot will retain your existing settings!*"
@@ -710,7 +597,8 @@ class RoleManager(commands.Cog):
                 f"• **Basic Roles Exclusivity:** {basic_rules_text}\n"
                 f"• **Member Requirement:** Holding any Rank or Staff role strictly enforces having {member_str}.\n"
                 f"• **Recruit Exclusivity:** Holding {recruit_str if recruit_role else 'Recruit'} strictly strips {member_str}, Rank, and Staff roles.\n"
-                f"• **Multiple Ranks:** Rank roles are mutually exclusive. Progression maintains a single active rank."
+                f"• **Multiple Ranks:** Rank roles are mutually exclusive. Progression maintains a single active rank.\n"
+                f"• **Custom Prefix Override:** Members holding {custom_prefix_str} bypass prefix enforcement."
             ),
             inline=False,
         )
@@ -754,7 +642,7 @@ class RoleManager(commands.Cog):
         cfg = configs.get(str(role.guild.id), {})
 
         modified = False
-        for key in ["basic_role_ids", "staff_role_ids", "rank_role_ids"]:
+        for key in ["basic_role_ids", "visitor_role_ids", "staff_role_ids", "rank_role_ids"]:
             if role.id in cfg.get(key, []):
                 cfg[key].remove(role.id)
                 modified = True
@@ -765,6 +653,10 @@ class RoleManager(commands.Cog):
 
         if cfg.get("member_role_id") == role.id:
             cfg["member_role_id"] = None
+            modified = True
+
+        if cfg.get("custom_prefix_role_id") == role.id:
+            cfg["custom_prefix_role_id"] = None
             modified = True
 
         if str(role.id) in cfg.get("role_prefixes", {}):
@@ -779,21 +671,16 @@ class RoleManager(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        """Strict Dynamic ID-based Listener for Basic Roles, Staff, Ranks, and Prefixes."""
-        if after.bot:
-            return
-
-        if after.id in self._processing_users:
+        """Event-Driven Hierarchy Listener following the Flowchart logic strictly."""
+        if after.bot or after.id in self._processing_users:
             return
 
         guild = after.guild
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_json(CONFIG_FILE).get(str(guild.id), {})
 
-        # ---------------------------------------------------------------------
-        # SELF-NICKNAME OVERRIDE PROTECTION
-        # Triggered when roles remain identical but the user changed their display name
-        # ---------------------------------------------------------------------
+        # -----------------------------------------------------------------
+        # NICKNAME PROTECTION / OVERRIDE BRANCH
+        # -----------------------------------------------------------------
         if before.roles == after.roles:
             if before.display_name != after.display_name:
                 self._processing_users.add(after.id)
@@ -807,8 +694,12 @@ class RoleManager(commands.Cog):
 
         try:
             basic_role_ids = cfg.get("basic_role_ids", [])
+            visitor_role_ids = cfg.get("visitor_role_ids", [])
+            all_basic_ids = set(basic_role_ids + visitor_role_ids)
+
             recruit_role_id = cfg.get("recruit_role_id")
             member_role_id = cfg.get("member_role_id")
+
             staff_role_ids = cfg.get("staff_role_ids", [])
             rank_role_ids = cfg.get("rank_role_ids", [])
 
@@ -816,137 +707,133 @@ class RoleManager(commands.Cog):
             removed_role_ids = {r.id for r in (set(before.roles) - set(after.roles))}
             user_role_ids = {r.id for r in after.roles}
 
-            added_roles_str = ", ".join([f"'{r.name}' ({r.id})" for r in (set(after.roles) - set(before.roles))])
-            removed_roles_str = ", ".join([f"'{r.name}' ({r.id})" for r in (set(before.roles) - set(after.roles))])
-            logger.info(
-                f"[RoleManager] 🔄 Role Change Detected for {after.display_name} ({after.id}) in '{guild.name}': "
-                f"Gained: [{added_roles_str or 'None'}] | Lost: [{removed_roles_str or 'None'}]"
-            )
-
             roles_to_remove = []
             roles_to_add = []
 
-            pure_basic_ids = [rid for rid in basic_role_ids if rid != member_role_id and rid != recruit_role_id]
+            # Identify specific role gained/lost events
+            gained_basic = next((r for r in after.roles if r.id in added_role_ids and r.id in all_basic_ids), None)
+            gained_recruit = next((r for r in after.roles if r.id in added_role_ids and r.id == recruit_role_id), None)
+            gained_rank = next((r for r in after.roles if r.id in added_role_ids and r.id in rank_role_ids), None)
+            gained_staff = next((r for r in after.roles if r.id in added_role_ids and r.id in staff_role_ids), None)
+            gained_member = next((r for r in after.roles if r.id in added_role_ids and r.id == member_role_id), None)
+            lost_member = member_role_id in removed_role_ids if member_role_id else False
 
-            # 1. GAINED RECRUIT OR BASIC ENTRY ROLE -> STRIP STAFF & RANKS
-            if recruit_role_id and recruit_role_id in added_role_ids:
-                for r in after.roles:
-                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id == member_role_id or r.id in pure_basic_ids:
-                        if r.id != recruit_role_id and r not in roles_to_remove:
-                            roles_to_remove.append(r)
-
-            elif any(rid in added_role_ids for rid in pure_basic_ids):
+            # -----------------------------------------------------------------
+            # BRANCH 1: GAINED BASIC ROLE (Visitor, Friend, Stranger)
+            # -----------------------------------------------------------------
+            if gained_basic:
                 for r in after.roles:
                     if r.id in rank_role_ids or r.id in staff_role_ids or r.id == member_role_id or r.id == recruit_role_id:
-                        if r.id not in added_role_ids and r not in roles_to_remove:
-                            roles_to_remove.append(r)
-
-            # 2. PURE BASIC ROLES MUTUAL EXCLUSIVITY (Visitor vs Stranger vs Friend)
-            active_pure_basic_ids = [
-                rid for rid in pure_basic_ids 
-                if rid in user_role_ids and rid not in [r.id for r in roles_to_remove]
-            ]
-            if len(active_pure_basic_ids) > 1:
-                newest_pure_id = next((rid for rid in added_role_ids if rid in pure_basic_ids), None)
-                primary_pure_id = newest_pure_id if newest_pure_id else active_pure_basic_ids[0]
-
-                for rid in active_pure_basic_ids:
-                    if rid != primary_pure_id:
-                        b_obj = guild.get_role(rid)
-                        if b_obj and b_obj not in roles_to_remove:
-                            roles_to_remove.append(b_obj)
-
-            # 3. MUTUAL EXCLUSIVITY: RANK ROLES (Keep newest rank)
-            active_rank_ids = [
-                rid for rid in rank_role_ids 
-                if rid in user_role_ids and rid not in [r.id for r in roles_to_remove]
-            ]
-            if len(active_rank_ids) > 1:
-                newest_rank_id = next((rid for rid in added_role_ids if rid in rank_role_ids), None)
-                primary_rank_id = newest_rank_id if newest_rank_id else active_rank_ids[0]
-
-                for rid in active_rank_ids:
-                    if rid != primary_rank_id:
-                        r_obj = guild.get_role(rid)
-                        if r_obj and r_obj not in roles_to_remove:
-                            roles_to_remove.append(r_obj)
-
-            # 4. MUTUAL EXCLUSIVITY: STAFF ROLES (Keep newest staff role)
-            active_staff_ids = [
-                rid for rid in staff_role_ids 
-                if rid in user_role_ids and rid not in [r.id for r in roles_to_remove]
-            ]
-            if len(active_staff_ids) > 1:
-                newest_staff_id = next((rid for rid in added_role_ids if rid in staff_role_ids), None)
-                primary_staff_id = newest_staff_id if newest_staff_id else active_staff_ids[0]
-
-                for rid in active_staff_ids:
-                    if rid != primary_staff_id:
-                        s_obj = guild.get_role(rid)
-                        if s_obj and s_obj not in roles_to_remove:
-                            roles_to_remove.append(s_obj)
-
-            # 5. MEMBER EXPLICITLY LOST MEMBER ROLE -> STRIP STAFF, RANKS, RECRUIT
-            if member_role_id and member_role_id in removed_role_ids:
-                for r in after.roles:
-                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id == recruit_role_id:
                         if r not in roles_to_remove:
                             roles_to_remove.append(r)
 
-                if roles_to_remove:
-                    try:
-                        await after.remove_roles(
-                            *roles_to_remove,
-                            reason="Lost Member status — Automatically stripped Staff and Rank roles.",
-                        )
-                        logger.info(f"[RoleManager] 🧹 Stripped Staff/Rank roles from {after.display_name} due to Member Role loss.")
-                    except discord.HTTPException as e:
-                        logger.error(f"[RoleManager] Failed to strip staff/ranks: {e}")
-                await self._update_member_nickname_prefix(after, cfg)
-                return
+                for r in after.roles:
+                    if r.id in all_basic_ids and r.id != gained_basic.id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
 
-            remaining_staff = [rid for rid in staff_role_ids if rid in user_role_ids and rid not in [r.id for r in roles_to_remove]]
-            remaining_ranks = [rid for rid in rank_role_ids if rid in user_role_ids and rid not in [r.id for r in roles_to_remove]]
+            # -----------------------------------------------------------------
+            # BRANCH 2: GAINED RECRUIT ROLE
+            # -----------------------------------------------------------------
+            elif gained_recruit:
+                for r in after.roles:
+                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id == member_role_id or r.id in all_basic_ids:
+                        if r.id != recruit_role_id and r not in roles_to_remove:
+                            roles_to_remove.append(r)
 
-            # 6. MEMBER HAS STAFF OR RANK ROLES -> ENFORCE MEMBER ROLE AND STRIP PURE BASIC & RECRUIT ROLES
-            has_member = member_role_id and member_role_id in user_role_ids
-            if remaining_staff or remaining_ranks:
+            # -----------------------------------------------------------------
+            # BRANCH 3: GAINED RANK ROLE
+            # -----------------------------------------------------------------
+            elif gained_rank:
+                for r in after.roles:
+                    if r.id in all_basic_ids or r.id == recruit_role_id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
+
                 if member_role_id and member_role_id not in user_role_ids:
                     m_role = guild.get_role(member_role_id)
                     if m_role and m_role not in roles_to_add:
                         roles_to_add.append(m_role)
 
-            if has_member or remaining_staff or remaining_ranks:
-                for rid in pure_basic_ids + ([recruit_role_id] if recruit_role_id else []):
-                    if rid in user_role_ids and rid not in added_role_ids:
-                        b_role = guild.get_role(rid)
-                        if b_role and b_role not in roles_to_remove:
-                            roles_to_remove.append(b_role)
+                for r in after.roles:
+                    if r.id in rank_role_ids and r.id != gained_rank.id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
 
-            # Safeguard: Explicitly block recruit_role_id from ever appearing in roles_to_remove if added in this event
-            if recruit_role_id and recruit_role_id in added_role_ids:
-                roles_to_remove = [r for r in roles_to_remove if r.id != recruit_role_id]
+            # -----------------------------------------------------------------
+            # BRANCH 4: GAINED STAFF ROLE
+            # -----------------------------------------------------------------
+            elif gained_staff:
+                for r in after.roles:
+                    if r.id in all_basic_ids or r.id == recruit_role_id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
 
+                if member_role_id and member_role_id not in user_role_ids:
+                    m_role = guild.get_role(member_role_id)
+                    if m_role and m_role not in roles_to_add:
+                        roles_to_add.append(m_role)
+
+                for r in after.roles:
+                    if r.id in staff_role_ids and r.id != gained_staff.id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
+
+            # -----------------------------------------------------------------
+            # BRANCH 5: GAINED MEMBER ROLE MANUALLY
+            # -----------------------------------------------------------------
+            elif gained_member:
+                for r in after.roles:
+                    if r.id in all_basic_ids or r.id == recruit_role_id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
+
+            # -----------------------------------------------------------------
+            # BRANCH 6: MEMBER STATUS REMOVED (Full Demotion to Visitor)
+            # -----------------------------------------------------------------
+            elif lost_member:
+                for r in after.roles:
+                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id in all_basic_ids or r.id == recruit_role_id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
+
+                visitor_id = list(visitor_role_ids)[0] if visitor_role_ids else None
+                if visitor_id:
+                    v_role = guild.get_role(visitor_id)
+                    if v_role and v_role not in roles_to_add:
+                        roles_to_add.append(v_role)
+
+            # -----------------------------------------------------------------
+            # FALLBACK RECONCILIATION
+            # -----------------------------------------------------------------
+            else:
+                active_ranks = [r for r in after.roles if r.id in rank_role_ids]
+                active_staff = [r for r in after.roles if r.id in staff_role_ids]
+                has_member_role = member_role_id and member_role_id in user_role_ids
+
+                if active_ranks or active_staff or has_member_role:
+                    for r in after.roles:
+                        if (r.id in all_basic_ids or r.id == recruit_role_id) and r not in roles_to_remove:
+                            roles_to_remove.append(r)
+
+            # -----------------------------------------------------------------
+            # EXECUTION
+            # -----------------------------------------------------------------
             if roles_to_add:
-                add_names = ", ".join([f"'{r.name}' ({r.id})" for r in roles_to_add])
+                add_names = ", ".join([f"'{r.name}'" for r in roles_to_add])
                 try:
-                    await after.add_roles(
-                        *roles_to_add,
-                        reason="Auto-assigned Member Role for Staff/Ranked Member",
-                    )
-                    logger.info(f"[RoleManager] ✅ Granted required role(s) [{add_names}] to {after.display_name} ({after.id}).")
+                    await after.add_roles(*roles_to_add, reason="Role Flowchart Auto-Assignment")
+                    logger.info(f"[RoleManager] ✅ Granted role(s) [{add_names}] to {after.display_name}.")
                 except discord.HTTPException as e:
-                    logger.error(f"[RoleManager] ❌ Failed to add role(s) [{add_names}] to {after.display_name} ({after.id}): {e}", exc_info=True)
+                    logger.error(f"[RoleManager] ❌ Failed to add roles [{add_names}] to {after.display_name}: {e}")
 
             if roles_to_remove:
-                remove_names = ", ".join([f"'{r.name}' ({r.id})" for r in roles_to_remove])
+                remove_names = ", ".join([f"'{r.name}'" for r in roles_to_remove])
                 try:
-                    await after.remove_roles(
-                        *roles_to_remove, reason="Role Exclusivity Reconciliation"
-                    )
-                    logger.info(f"[RoleManager] 🧹 Stripped exclusive role(s) [{remove_names}] from {after.display_name} ({after.id}).")
+                    await after.remove_roles(*roles_to_remove, reason="Role Flowchart Exclusivity")
+                    logger.info(f"[RoleManager] 🧹 Stripped role(s) [{remove_names}] from {after.display_name}.")
                 except discord.HTTPException as e:
-                    logger.error(f"[RoleManager] ❌ Failed to remove role(s) [{remove_names}] from {after.display_name} ({after.id}): {e}", exc_info=True)
+                    logger.error(f"[RoleManager] ❌ Failed to remove roles [{remove_names}] from {after.display_name}: {e}")
 
             fresh_member = guild.get_member(after.id) or after
             await self._update_member_nickname_prefix(fresh_member, cfg)
@@ -979,7 +866,7 @@ class RoleManager(commands.Cog):
 
     @app_commands.command(
         name="setup_rank_roles",
-        description="Configure dynamic lists of Basic, Recruit, Member, Staff, and Rank roles.",
+        description="Configure dynamic lists of Basic, Recruit, Member, Custom Prefix, Staff, and Rank roles.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_rank_roles(
@@ -987,6 +874,7 @@ class RoleManager(commands.Cog):
         interaction: discord.Interaction,
         member_role: discord.Role = None,
         recruit_role: discord.Role = None,
+        custom_prefix_role: discord.Role = None,
         basic_roles: str = None,
         staff_roles: str = None,
         rank_roles: str = None,
@@ -1001,6 +889,8 @@ class RoleManager(commands.Cog):
             guild_cfg["member_role_id"] = member_role.id
         if recruit_role:
             guild_cfg["recruit_role_id"] = recruit_role.id
+        if custom_prefix_role:
+            guild_cfg["custom_prefix_role_id"] = custom_prefix_role.id
 
         if basic_roles is not None:
             parsed_basic_ids = parse_role_ids(guild, basic_roles)
@@ -1031,6 +921,11 @@ class RoleManager(commands.Cog):
             if guild_cfg.get("recruit_role_id")
             else "`Not Set`"
         )
+        c_str = (
+            f"<@&{guild_cfg.get('custom_prefix_role_id')}>"
+            if guild_cfg.get("custom_prefix_role_id")
+            else "`Not Set`"
+        )
         s_str = (
             ", ".join([f"<@&{rid}>" for rid in guild_cfg.get("staff_role_ids", [])])
             if guild_cfg.get("staff_role_ids")
@@ -1052,6 +947,7 @@ class RoleManager(commands.Cog):
             f"• **Basic Roles:** {b_str}\n"
             f"• **Recruit Role:** {rec_str}\n"
             f"• **Member Requirement Role:** {m_str}\n"
+            f"• **Custom Prefix Bypass Role:** {c_str}\n"
             f"• **Staff Roles:** {s_str}\n"
             f"• **Rank Roles:** {ranks_str}",
             ephemeral=True,

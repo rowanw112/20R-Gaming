@@ -169,11 +169,163 @@ class AdminUtils(commands.Cog):
             await interaction.followup.send("❌ Failed to upload log file due to an HTTP error.")
 
     # -------------------------------------------------------------------------
+    # 4. MESSAGE PURGE / CLEAR TOOL
+    # -------------------------------------------------------------------------
+    @app_commands.command(
+        name="clear",
+        description="Delete the last X messages in the current text channel or thread.",
+    )
+    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.describe(
+        amount="Number of messages to delete (1-100)",
+        user="Optional: Delete messages from a specific user only",
+        ignore_pinned="Optional: Keep pinned messages (Default: True)",
+    )
+    async def clear_messages(
+        self,
+        interaction: discord.Interaction,
+        amount: app_commands.Range[int, 1, 100],
+        user: discord.Member | None = None,
+        ignore_pinned: bool = True,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        channel = interaction.channel
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            await interaction.followup.send(
+                "❌ Messages can only be cleared in text channels or threads.",
+                ephemeral=True,
+            )
+            return
+
+        def check(message: discord.Message) -> bool:
+            if ignore_pinned and message.pinned:
+                return False
+            if user and message.author.id != user.id:
+                return False
+            return True
+
+        try:
+            deleted = await channel.purge(limit=amount, check=check)
+            
+            user_filter_str = f" from {user.mention}" if user else ""
+            pinned_filter_str = " (skipping pinned)" if ignore_pinned else ""
+
+            await interaction.followup.send(
+                f"🧹 Successfully cleared `{len(deleted)}` message(s){user_filter_str}{pinned_filter_str}.",
+                ephemeral=True,
+            )
+            logger.info(
+                f"[AdminUtils] {interaction.user} cleared {len(deleted)} messages in #{channel.name}"
+            )
+
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ I lack the `Manage Messages` permission to delete messages here.",
+                ephemeral=True,
+            )
+        except discord.HTTPException as e:
+            logger.error(f"Failed to clear messages in #{channel.name}: {e}")
+            await interaction.followup.send(
+                "❌ Failed to delete messages (Note: Messages older than 14 days cannot be bulk deleted by Discord).",
+                ephemeral=True,
+            )
+
+    # -------------------------------------------------------------------------
+    # 5. MENTION PERMISSION LOCKDOWN TOOL
+    # -------------------------------------------------------------------------
+    @app_commands.command(
+        name="restrictmentions",
+        description="Lock down role settings to prevent roles from being mentioned or pinging @everyone.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        disable_mentionable="Set roles to NOT be mentionable (@Role) by anyone (Default: True)",
+        disable_mention_everyone="Strip the 'Mention @everyone, @here, and All Roles' permission from roles (Default: True)",
+        exclude_staff="Keep staff roles unaffected (Default: True)",
+    )
+    async def restrict_mentions(
+        self,
+        interaction: discord.Interaction,
+        disable_mentionable: bool = True,
+        disable_mention_everyone: bool = True,
+        exclude_staff: bool = True,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        if not guild:
+            await interaction.followup.send("This command can only be used in a server.", ephemeral=True)
+            return
+
+        bot_member = guild.me
+        updated_count = 0
+        skipped_count = 0
+
+        for role in guild.roles:
+            # Skip @everyone role (handled via channel overwrites or server defaults)
+            if role.is_default():
+                continue
+
+            # Skip roles higher than or equal to the bot's highest role
+            if role.position >= bot_member.top_role.position:
+                skipped_count += 1
+                continue
+
+            # Skip managed integration/bot roles
+            if role.is_bot_managed() or role.is_premium_subscriber():
+                skipped_count += 1
+                continue
+
+            # Exclude Staff Roles if requested
+            if exclude_staff and "staff" in role.name.lower():
+                skipped_count += 1
+                continue
+
+            try:
+                new_perms = role.permissions
+                if disable_mention_everyone:
+                    new_perms.update(mention_everyone=False)
+
+                new_mentionable = role.mentionable
+                if disable_mentionable:
+                    new_mentionable = False
+
+                await role.edit(
+                    permissions=new_perms,
+                    mentionable=new_mentionable,
+                    reason=f"Mention lockdown by {interaction.user}",
+                )
+                updated_count += 1
+
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.error(f"[AdminUtils] Failed to update permissions for role {role.name}: {e}")
+                skipped_count += 1
+
+        actions = []
+        if disable_mentionable:
+            actions.append("`Mentionable = False`")
+        if disable_mention_everyone:
+            actions.append("`Mention @everyone Permission = Disabled`")
+
+        action_str = " and ".join(actions) if actions else "No changes selected"
+
+        await interaction.followup.send(
+            f"🔒 **Mention Lockdown Complete**\n"
+            f"• **Applied Settings:** {action_str}\n"
+            f"• **Roles Updated:** `{updated_count}`\n"
+            f"• **Roles Skipped/Protected:** `{skipped_count}` *(Staff/Higher Roles)*",
+            ephemeral=True,
+        )
+
+    # -------------------------------------------------------------------------
     # ERROR HANDLERS
     # -------------------------------------------------------------------------
     @update_names.error
     @update_roles.error
     @get_logs.error
+    @clear_messages.error
+    @restrict_mentions.error
     async def admin_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):

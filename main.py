@@ -24,7 +24,24 @@ os.makedirs(LOG_DIR, exist_ok=True)  # Ensures the logs/ directory exists
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-formatter = logging.Formatter(
+# Standard formatter for log files
+file_formatter = logging.Formatter(
+    fmt="[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
+# Custom colored formatter for console output (Prints ERROR logs in bright red)
+class ColoredConsoleFormatter(logging.Formatter):
+    COLOR_RED = "\033[91m"
+    COLOR_RESET = "\033[0m"
+
+    def format(self, record):
+        formatted_msg = super().format(record)
+        if record.levelno >= logging.ERROR:
+            return f"{self.COLOR_RED}{formatted_msg}{self.COLOR_RESET}"
+        return formatted_msg
+
+console_formatter = ColoredConsoleFormatter(
     fmt="[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -36,12 +53,12 @@ file_handler = RotatingFileHandler(
     maxBytes=5 * 1024 * 1024,
     backupCount=5,
 )
-file_handler.setFormatter(formatter)
+file_handler.setFormatter(file_formatter)
 logger.addHandler(file_handler)
 
-# 2. Console Handler printing to terminal
+# 2. Console Handler printing to terminal (With Red Error Formatting)
 console_handler = logging.StreamHandler()
-console_handler.setFormatter(formatter)
+console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
 
 
@@ -143,8 +160,10 @@ async def main():
                             await bot.load_extension(f"cogs.{cog_name}")
                             reloaded.append(f"`{cog_name}` *(new)*")
                         except Exception as e:
+                            logging.error(f"Failed to load Cog {cog_name}: {e}")
                             failed.append(f"`{cog_name}` ({e})")
                     except Exception as e:
+                        logging.error(f"Failed to reload Cog {cog_name}: {e}")
                         failed.append(f"`{cog_name}` ({e})")
 
         msg = f"🔄 **Reloaded Cogs ({len(reloaded)}):** {', '.join(reloaded) if reloaded else 'None'}"

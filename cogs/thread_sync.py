@@ -1,15 +1,11 @@
-import asyncio
 import logging
 import discord
-from discord import app_commands
 from discord.ext import commands
 
 from core.database import (
-    load_division_records,
+    load_thread_mappings,
     load_thread_sync_dashboard_config,
     save_thread_sync_dashboard_config,
-    load_thread_mappings,
-    save_thread_mappings,
 )
 
 logger = logging.getLogger(__name__)
@@ -18,34 +14,57 @@ logger = logging.getLogger(__name__)
 class ThreadSync(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self._sync_lock = asyncio.Lock()
 
-    async def get_or_fetch_thread(
-        self, guild: discord.Guild, thread_id: int
-    ) -> discord.Thread | None:
-        """Safely fetches a thread from cache, guild active threads, or Discord API."""
-        thread = guild.get_thread(thread_id)
-        if isinstance(thread, discord.Thread):
-            return thread
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Runs a full thread audit and refreshes the Thread Sync Dashboard on startup."""
+        logger.info("[ThreadSync] 🔄 Running startup thread audit & dashboard refresh...")
+        for guild in self.bot.guilds:
+            try:
+                await self.run_full_thread_audit(guild)
+                await self.update_dashboard(guild)
+            except Exception as e:
+                logger.error(f"[ThreadSync] Error during startup sync for '{guild.name}': {e}")
+        logger.info("[ThreadSync] ✅ Startup thread audit complete!")
 
-        for t in guild.threads:
-            if t.id == thread_id:
-                return t
+    async def run_full_thread_audit(self, guild: discord.Guild):
+        """Audits all mapped private threads and adds members holding the required role."""
+        mappings = load_thread_mappings() or []
+        if not mappings:
+            return
 
-        try:
-            ch = await guild.fetch_channel(thread_id)
-            if isinstance(ch, discord.Thread):
-                return ch
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
+        for mapping in mappings:
+            role_id = mapping.get("role_id")
+            thread_id = mapping.get("thread_id")
 
-        return None
+            if not role_id or not thread_id:
+                continue
+
+            role = guild.get_role(role_id)
+            thread = guild.get_thread(thread_id)
+
+            if not thread:
+                try:
+                    thread = await guild.fetch_channel(thread_id)
+                except (discord.NotFound, discord.HTTPException):
+                    continue
+
+            if not role or not isinstance(thread, discord.Thread):
+                continue
+
+            # Add all role holders to the private thread
+            for member in role.members:
+                if not member.bot:
+                    try:
+                        await thread.add_user(member)
+                    except discord.HTTPException as e:
+                        logger.error(f"[ThreadSync] Failed to add {member.display_name} to #{thread.name}: {e}")
 
     async def update_dashboard(self, guild: discord.Guild):
-        """Builds and edits the live-updating embed grouped by normalized Game Hubs and Standalone links."""
-        dash_config = load_thread_sync_dashboard_config()
-        channel_id = dash_config.get("channel_id")
-        message_id = dash_config.get("message_id")
+        """Updates or posts the live Thread Sync Dashboard embed."""
+        dash_cfg = load_thread_sync_dashboard_config()
+        channel_id = dash_cfg.get("channel_id")
+        message_id = dash_cfg.get("message_id")
 
         if not channel_id:
             return
@@ -60,547 +79,112 @@ class ThreadSync(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
 
-        mappings = load_thread_mappings()
-        division_records = load_division_records()
-
-        div_role_to_game: dict[int, tuple[str, bool]] = {}
-        for rec in division_records:
-            if isinstance(rec, dict):
-                game_title = rec.get("game_name") or rec.get("short_name") or "Division"
-                for key in ("game_role_id", "member_role_id", "staff_role_id", "div_staff_role_id"):
-                    rid = rec.get(key)
-                    if rid:
-                        div_role_to_game[int(rid)] = (game_title, True)
+        mappings = load_thread_mappings() or []
 
         embed = discord.Embed(
-            title="📌 Role ➔ Thread Auto-Sync Dashboard",
+            title="🧵 Private Thread Sync Dashboard",
+            description="Live mapping of private hub threads and their synchronized roles.",
             color=discord.Color.blue(),
             timestamp=discord.utils.utcnow(),
         )
 
-        embed.add_field(
-            name="📖 Purpose & How It Works",
-            value=(
-                "Thread Mapping automatically manages member access to private threads based on Discord roles.\n"
-                "• **Role Added:** Member receives role ➔ added to thread.\n"
-                "• **Role Removed:** Role removed ➔ removed from thread."
-            ),
-            inline=False,
-        )
+        mapping_lines = []
+        for m in mappings:
+            r = guild.get_role(m.get("role_id"))
+            t = guild.get_thread(m.get("thread_id"))
+            r_str = r.mention if r else f"`Role ID: {m.get('role_id')}`"
+            t_str = t.mention if t else f"`Thread ID: {m.get('thread_id')}`"
+            mapping_lines.append(f"• **Role:** {r_str} ➔ **Thread:** 🔒 {t_str}")
 
         embed.add_field(
-            name="🛠️ Staff Instructions",
-            value=(
-                "• `/link_thread role:@Role` — Link access inside a thread.\n"
-                "• `/unlink_thread role:@Role` — Remove thread connection.\n"
-                "• `/force_thread_sync` — Run full audit and sync members."
-            ),
+            name="📍 Mapped Sync Routes",
+            value="\n".join(mapping_lines) if mapping_lines else "*No active thread mappings found.*",
             inline=False,
         )
-
-        if not mappings:
-            embed.add_field(
-                name="🔗 Active Links",
-                value="*No roles are currently linked to threads.*",
-                inline=False,
-            )
-        else:
-            grouped_games: dict[str, dict[str, any]] = {}
-            standalone_links: list[tuple[discord.Role, discord.Thread]] = []
-
-            GAME_MAP = {
-                "bf6": "BF6",
-                "rl": "Rocket League",
-                "rocket": "Rocket League",
-                "rust": "Rust",
-                "squad": "Squad",
-                "wardogs": "Wardogs",
-                "helldivers": "Helldivers",
-                "wow": "World of Warcraft",
-            }
-
-            for entry in mappings:
-                if not isinstance(entry, dict):
-                    continue
-
-                r_id = entry.get("role_id")
-                t_id = entry.get("thread_id")
-
-                role = guild.get_role(int(r_id)) if r_id else None
-                thread = (
-                    await self.get_or_fetch_thread(guild, int(t_id)) if t_id else None
-                )
-
-                if not role or not thread:
-                    continue
-
-                matched_game = None
-                has_div = False
-
-                if int(r_id) in div_role_to_game:
-                    matched_game, has_div = div_role_to_game[int(r_id)]
-                else:
-                    raw_role_name = role.name.lower()
-                    for key, display_name in GAME_MAP.items():
-                        if key in raw_role_name:
-                            matched_game = display_name
-                            has_div = "division" in raw_role_name
-                            break
-
-                if matched_game:
-                    if matched_game not in grouped_games:
-                        grouped_games[matched_game] = {
-                            "roles": set(),
-                            "threads": set(),
-                            "has_division_role": has_div,
-                        }
-
-                    grouped_games[matched_game]["roles"].add(role)
-                    grouped_games[matched_game]["threads"].add(thread)
-                    if has_div:
-                        grouped_games[matched_game]["has_division_role"] = True
-                else:
-                    standalone_links.append((role, thread))
-
-            # Render Grouped Game Hubs
-            for game_name, data in sorted(grouped_games.items()):
-                roles_list = sorted(list(data["roles"]), key=lambda r: r.name)
-                threads_list = sorted(list(data["threads"]), key=lambda t: t.name)
-
-                role_mentions = " • ".join([r.mention for r in roles_list])
-                thread_mentions = ", ".join([f"🔒 {t.mention}" for t in threads_list])
-
-                field_value = (
-                    f"**Linked Roles:** {role_mentions}\n"
-                    f"**Hub Threads:** {thread_mentions}"
-                )
-
-                header_title = (
-                    f"🎮 {game_name} Division"
-                    if data["has_division_role"] and not game_name.endswith("Division")
-                    else f"🎮 {game_name}"
-                )
-
-                embed.add_field(
-                    name=header_title,
-                    value=field_value,
-                    inline=False,
-                )
-
-            # Render Standalone Links
-            if standalone_links:
-                custom_lines = [
-                    f"• {role.mention} ➔ 🔒 {thread.mention}"
-                    for role, thread in standalone_links
-                ]
-                embed.add_field(
-                    name="🔗 Custom / Standalone Role Links",
-                    value="\n".join(custom_lines),
-                    inline=False,
-                )
-
-        embed.set_footer(text="Auto-updates live on link / unlink")
-
-        try:
-            if message_id:
-                try:
-                    msg = await channel.fetch_message(message_id)
-                    await msg.edit(embed=embed)
-                    return
-                except discord.NotFound:
-                    pass
-
-            msg = await channel.send(embed=embed)
-            try:
-                await msg.pin(reason="Live Thread-Sync Dashboard")
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-
-            dash_config["channel_id"] = channel.id
-            dash_config["message_id"] = msg.id
-            save_thread_sync_dashboard_config(dash_config)
-
-        except (discord.Forbidden, discord.HTTPException) as e:
-            logger.error(f"❌ Dashboard update error in #{channel.name}: {e}")
-
-    async def run_full_thread_audit(self, guild: discord.Guild):
-        """Audits mapped threads without purging valid uncached threads."""
-        mappings = load_thread_mappings()
-        if not mappings:
-            logger.info("✅ No thread mappings found. Skipping audit.")
-            return
-
-        sanitized_mappings = []
-        for entry in mappings:
-            if not isinstance(entry, dict):
-                continue
-
-            t_id = entry.get("thread_id")
-            r_id = entry.get("role_id")
-
-            role_exists = guild.get_role(int(r_id)) if r_id else None
-            thread_exists = (
-                await self.get_or_fetch_thread(guild, int(t_id)) if t_id else None
-            )
-
-            if role_exists and thread_exists:
-                sanitized_mappings.append(entry)
-
-        if len(sanitized_mappings) < len(mappings):
-            logger.info(
-                f"🧹 [Database Sanitation] Purged {len(mappings) - len(sanitized_mappings)} orphaned mapping entry(ies)."
-            )
-            save_thread_mappings(sanitized_mappings)
-            mappings = sanitized_mappings
-
-        if not mappings:
-            return
-
-        thread_to_roles: dict[int, set[int]] = {}
-        for entry in mappings:
-            if not isinstance(entry, dict):
-                continue
-            t_id = entry.get("thread_id")
-            r_id = entry.get("role_id")
-            if t_id and r_id:
-                thread_to_roles.setdefault(int(t_id), set()).add(int(r_id))
-
-        for thread_id, allowed_role_ids in thread_to_roles.items():
-            thread = await self.get_or_fetch_thread(guild, thread_id)
-            if not thread:
-                continue
-
-            try:
-                await thread.add_user(discord.Object(id=self.bot.user.id))
-            except discord.HTTPException:
-                pass
-
-            role_member_ids = {
-                m.id
-                for m in guild.members
-                if not m.bot and any(r.id in allowed_role_ids for r in m.roles)
-            }
-
-            exempt_user_ids = {
-                m.id
-                for m in guild.members
-                if not m.bot
-                and (
-                    m.guild_permissions.administrator
-                    or m.guild_permissions.manage_threads
-                    or thread.permissions_for(m).manage_threads
-                )
-            }
-
-            target_member_ids = role_member_ids.union(exempt_user_ids)
-
-            try:
-                existing_thread_members = await thread.fetch_members()
-                existing_user_ids = {tm.id for tm in existing_thread_members}
-            except (discord.Forbidden, discord.HTTPException) as e:
-                logger.error(f"Could not fetch members for thread {thread.name}: {e}")
-                continue
-
-            # Add missing role members
-            missing_user_ids = role_member_ids - existing_user_ids
-            for user_id in missing_user_ids:
-                try:
-                    await thread.add_user(discord.Object(id=user_id))
-                    await asyncio.sleep(0.25)
-                except discord.HTTPException as e:
-                    if e.status == 429:
-                        retry_after = float(e.response.headers.get("Retry-After", 5))
-                        await asyncio.sleep(retry_after)
-
-            # Remove extra members
-            extra_user_ids = existing_user_ids - target_member_ids - {self.bot.user.id}
-            for user_id in extra_user_ids:
-                try:
-                    await thread.remove_user(discord.Object(id=user_id))
-                    await asyncio.sleep(0.25)
-                except discord.HTTPException as e:
-                    if e.status == 429:
-                        retry_after = float(e.response.headers.get("Retry-After", 5))
-                        await asyncio.sleep(retry_after)
-
-    @commands.Cog.listener()
-    async def on_member_update(self, before: discord.Member, after: discord.Member):
-        """Listens for role changes and dynamically adds/removes members from mapped threads."""
-        if before.roles == after.roles or after.bot:
-            return
-
-        mappings = load_thread_mappings()
-        if not mappings:
-            return
-
-        added_roles = set(after.roles) - set(before.roles)
-        removed_roles = set(before.roles) - set(after.roles)
-
-        guild = after.guild
-
-        if added_roles:
-            added_role_ids = {r.id for r in added_roles}
-            for entry in mappings:
-                if not isinstance(entry, dict):
-                    continue
-                r_id = entry.get("role_id")
-                t_id = entry.get("thread_id")
-
-                if r_id in added_role_ids and t_id:
-                    thread = await self.get_or_fetch_thread(guild, int(t_id))
-                    if isinstance(thread, discord.Thread):
-                        try:
-                            await thread.add_user(after)
-                            logger.info(
-                                f"➕ Added {after.display_name} to thread '{thread.name}' due to role gain."
-                            )
-                        except discord.HTTPException as e:
-                            logger.error(
-                                f"Failed to add {after.display_name} to thread '{thread.name}': {e}"
-                            )
-
-        if removed_roles:
-            removed_role_ids = {r.id for r in removed_roles}
-            for entry in mappings:
-                if not isinstance(entry, dict):
-                    continue
-                r_id = entry.get("role_id")
-                t_id = entry.get("thread_id")
-
-                if r_id in removed_role_ids and t_id:
-                    other_mapped_role_ids = {
-                        item.get("role_id")
-                        for item in mappings
-                        if isinstance(item, dict) and item.get("thread_id") == t_id
-                    }
-                    user_has_other_mapped_role = any(
-                        r.id in other_mapped_role_ids for r in after.roles
-                    )
-
-                    if not user_has_other_mapped_role:
-                        thread = await self.get_or_fetch_thread(guild, int(t_id))
-                        if isinstance(thread, discord.Thread):
-                            try:
-                                await thread.remove_user(after)
-                                logger.info(
-                                    f"➖ Removed {after.display_name} from thread '{thread.name}' due to role loss."
-                                )
-                            except discord.HTTPException as e:
-                                logger.error(
-                                    f"Failed to remove {after.display_name} from thread '{thread.name}': {e}"
-                                )
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        if self._sync_lock.locked():
-            return
-
-        async with self._sync_lock:
-            logger.info("🔄 Running post-downtime Thread Sync audit...")
-            for guild in self.bot.guilds:
-                await self.run_full_thread_audit(guild)
-                await self.update_dashboard(guild)
-            logger.info(
-                "✅ Post-downtime Thread Sync audit & dashboard update complete!"
-            )
-
-    @app_commands.command(
-        name="force_thread_sync",
-        description="Manually audit and sync missing users across all mapped threads.",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def force_thread_sync(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        await self.run_full_thread_audit(interaction.guild)
-        await self.update_dashboard(interaction.guild)
-        await interaction.followup.send(
-            "✅ **Thread Sync Audit Complete!** Checked all mapped threads and reconciled member access.",
-            ephemeral=True,
-        )
-
-    @app_commands.command(
-        name="link_thread",
-        description="Link a Discord Role to a Private Thread.",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def link_thread(
-        self,
-        interaction: discord.Interaction,
-        role: discord.Role,
-        thread: discord.Thread | None = None,
-    ):
-        target_thread = thread or interaction.channel
-
-        if not isinstance(target_thread, discord.Thread):
-            await interaction.response.send_message(
-                "❌ You must specify a thread in the `thread` option or run this inside the target thread!",
-                ephemeral=True,
-            )
-            return
-
-        mappings = load_thread_mappings()
-
-        exists = any(
-            isinstance(item, dict)
-            and item.get("role_id") == role.id
-            and item.get("thread_id") == target_thread.id
-            for item in mappings
-        )
-        if exists:
-            await interaction.response.send_message(
-                f"⚠️ **@{role.name}** is already linked to **{target_thread.name}**!",
-                ephemeral=True,
-            )
-            return
-
-        mappings.append(
-            {
-                "role_id": role.id,
-                "thread_id": target_thread.id,
-                "created_by": interaction.user.id,
-            }
-        )
-        save_thread_mappings(mappings)
-
-        try:
-            await target_thread.add_user(discord.Object(id=self.bot.user.id))
-        except discord.HTTPException:
-            pass
-
-        await interaction.response.send_message(
-            f"✅ Linked **@{role.name}** to thread **{target_thread.name}**!",
-            ephemeral=True,
-        )
-
-        await self.update_dashboard(interaction.guild)
-
-    @app_commands.command(
-        name="unlink_thread",
-        description="Unlink a role from a specific thread.",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def unlink_thread(
-        self,
-        interaction: discord.Interaction,
-        role: discord.Role,
-        thread: discord.Thread | None = None,
-    ):
-        target_thread = thread or interaction.channel
-
-        if not isinstance(target_thread, discord.Thread):
-            await interaction.response.send_message(
-                "❌ You must specify a thread in the `thread` option or run this inside the target thread!",
-                ephemeral=True,
-            )
-            return
-
-        mappings = load_thread_mappings()
-
-        new_mappings = [
-            item
-            for item in mappings
-            if not (
-                isinstance(item, dict)
-                and item.get("role_id") == role.id
-                and item.get("thread_id") == target_thread.id
-            )
-        ]
-
-        if len(new_mappings) < len(mappings):
-            save_thread_mappings(new_mappings)
-            await interaction.response.send_message(
-                f"✅ Successfully unlinked **@{role.name}** from thread **{target_thread.name}**!",
-                ephemeral=True,
-            )
-            await self.update_dashboard(interaction.guild)
-        else:
-            await interaction.response.send_message(
-                f"⚠️ No active link found between **@{role.name}** and thread **{target_thread.name}**.",
-                ephemeral=True,
-            )
-
-    @app_commands.command(
-        name="set_sync_channel",
-        description="Set the channel where the live role-thread dashboard lives.",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def set_sync_channel(
-        self,
-        interaction: discord.Interaction,
-        channel: discord.TextChannel | None = None,
-    ):
-        await interaction.response.defer(ephemeral=True)
-
-        target_channel = channel or interaction.channel
-        if not isinstance(target_channel, discord.TextChannel):
-            await interaction.followup.send(
-                "❌ Must be run in a text channel or specify a text channel!",
-                ephemeral=True,
-            )
-            return
-
-        dash_config = load_thread_sync_dashboard_config()
-        old_channel_id = dash_config.get("channel_id")
-        old_message_id = dash_config.get("message_id")
-
-        if old_channel_id and old_message_id:
-            try:
-                old_channel = interaction.guild.get_channel(
-                    old_channel_id
-                ) or await interaction.guild.fetch_channel(old_channel_id)
-                if isinstance(old_channel, discord.TextChannel):
-                    old_msg = await old_channel.fetch_message(old_message_id)
-                    await old_msg.delete()
-            except (discord.NotFound, discord.HTTPException, discord.Forbidden):
-                pass
-
-        dash_config["channel_id"] = target_channel.id
-        dash_config["message_id"] = None
-        save_thread_sync_dashboard_config(dash_config)
-
-        await self.update_dashboard(interaction.guild)
-
-        await interaction.followup.send(
-            f"✅ Live dashboard set to {target_channel.mention}!", ephemeral=True
-        )
-
-    @app_commands.command(
-        name="remove_sync_channel",
-        description="Remove the live dashboard embed and stop dashboard updates.",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def remove_sync_channel(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        dash_config = load_thread_sync_dashboard_config()
-        channel_id = dash_config.get("channel_id")
-        message_id = dash_config.get("message_id")
-
-        if not channel_id:
-            await interaction.followup.send(
-                "⚠️ No dashboard channel is currently set.", ephemeral=True
-            )
-            return
+        embed.set_footer(text="Auto-updates live on division creation or teardown.")
 
         if message_id:
             try:
-                channel = interaction.guild.get_channel(
-                    channel_id
-                ) or await interaction.guild.fetch_channel(channel_id)
-                if isinstance(channel, discord.TextChannel):
-                    msg = await channel.fetch_message(message_id)
-                    await msg.delete()
-            except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                msg = await channel.fetch_message(message_id)
+                await msg.edit(embed=embed)
+                return
+            except (discord.NotFound, discord.HTTPException):
                 pass
 
-        dash_config["channel_id"] = None
-        dash_config["message_id"] = None
-        save_thread_sync_dashboard_config(dash_config)
+        try:
+            posted_msg = await channel.send(embed=embed)
+            try:
+                await posted_msg.pin(reason="Live Thread Sync Dashboard")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
 
-        await interaction.followup.send(
-            "✅ Sync dashboard channel removed and embed cleared!",
-            ephemeral=True,
-        )
+            dash_cfg["channel_id"] = channel.id
+            dash_cfg["message_id"] = posted_msg.id
+            save_thread_sync_dashboard_config(dash_cfg)
+
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.error(f"❌ Error posting Thread Sync Dashboard in #{channel.name}: {e}")
+
+    # -------------------------------------------------------------------------
+    # REAL-TIME MENTION EVICTION LISTENER
+    # -------------------------------------------------------------------------
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Evicts users added to private threads via pings if they lack required roles."""
+        if message.author.bot or not message.guild or not isinstance(message.channel, discord.Thread):
+            return
+
+        thread = message.channel
+
+        # Only audit private threads
+        if thread.type != discord.ChannelType.private_thread:
+            return
+
+        # Skip if no user mentions are present
+        if not message.mentions:
+            return
+
+        mappings = load_thread_mappings()
+        if not mappings:
+            return
+
+        # Find all allowed role IDs mapped to this specific thread
+        allowed_role_ids = {
+            m.get("role_id")
+            for m in mappings
+            if isinstance(m, dict) and m.get("thread_id") == thread.id and m.get("role_id")
+        }
+
+        if not allowed_role_ids:
+            return
+
+        # Audit mentioned users
+        for mentioned_user in message.mentions:
+            if mentioned_user.bot:
+                continue
+
+            user_role_ids = {r.id for r in mentioned_user.roles}
+
+            # If user does not hold any of the allowed roles for this thread, evict them
+            if not user_role_ids.intersection(allowed_role_ids):
+                try:
+                    await thread.remove_user(mentioned_user)
+                    logger.info(
+                        f"[ThreadSync] Evicted pinged user {mentioned_user.display_name} "
+                        f"from private thread '{thread.name}' (lacks required role)."
+                    )
+
+                    warning_msg = await thread.send(
+                        f"⚠️ {mentioned_user.mention} does not have the required role for this thread "
+                        f"and was automatically removed."
+                    )
+                    await warning_msg.delete(delay=8)
+
+                except (discord.Forbidden, discord.HTTPException) as e:
+                    logger.error(
+                        f"[ThreadSync] Failed to evict pinged user {mentioned_user.display_name} "
+                        f"from thread '{thread.name}': {e}"
+                    )
 
 
 async def setup(bot: commands.Bot):

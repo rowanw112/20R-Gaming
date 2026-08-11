@@ -12,8 +12,11 @@ THREAD_SYNC_DASHBOARD_FILE = DATA_DIR / "thread_sync_dashboard.json"
 HUB_DEFAULTS_FILE = DATA_DIR / "hub_defaults.json"
 THREAD_MAPPINGS_FILE = DATA_DIR / "thread_mappings.json"
 DIVISION_RECORDS_FILE = DATA_DIR / "division_records.json"
+LEGACY_DIVISION_RECORDS_FILE = DATA_DIR / "legacy_division_records.json"
+CASUAL_RECORDS_FILE = DATA_DIR / "casual_records.json"
 APP_CONFIG_FILE = DATA_DIR / "app_config.json"
 APP_THREADS_FILE = DATA_DIR / "app_threads.json"
+ROLE_SYNC_CONFIG_FILE = DATA_DIR / "role_sync_config.json"
 
 
 # -------------------------------------------------------------------------
@@ -39,7 +42,7 @@ def save_hub_dashboard_config(data: dict) -> None:
 
 
 # -------------------------------------------------------------------------
-# THREAD SYNC DASHBOARD CONFIG (SEPARATE FROM HUB DASHBOARD)
+# THREAD SYNC DASHBOARD CONFIG
 # -------------------------------------------------------------------------
 def load_thread_sync_dashboard_config() -> dict:
     if not THREAD_SYNC_DASHBOARD_FILE.exists():
@@ -121,6 +124,50 @@ def save_division_records(data: list[dict]) -> None:
 
 
 # -------------------------------------------------------------------------
+# LEGACY DIVISION RECORDS
+# -------------------------------------------------------------------------
+def load_legacy_division_records() -> list[dict]:
+    if not LEGACY_DIVISION_RECORDS_FILE.exists():
+        return []
+    try:
+        with open(LEGACY_DIVISION_RECORDS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading legacy division records: {e}")
+        return []
+
+
+def save_legacy_division_records(data: list[dict]) -> None:
+    try:
+        with open(LEGACY_DIVISION_RECORDS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving legacy division records: {e}")
+
+
+# -------------------------------------------------------------------------
+# CASUAL GAME RECORDS
+# -------------------------------------------------------------------------
+def load_casual_records() -> list[dict]:
+    if not CASUAL_RECORDS_FILE.exists():
+        return []
+    try:
+        with open(CASUAL_RECORDS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading casual records: {e}")
+        return []
+
+
+def save_casual_records(data: list[dict]) -> None:
+    try:
+        with open(CASUAL_RECORDS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving casual records: {e}")
+
+
+# -------------------------------------------------------------------------
 # APPLICATION SYSTEM CONFIG & THREAD MAPPINGS
 # -------------------------------------------------------------------------
 def load_app_config() -> dict:
@@ -159,3 +206,25 @@ def save_app_threads(data: list[dict]) -> None:
             json.dump(data, f, indent=4)
     except Exception as e:
         logger.error(f"Error saving app threads: {e}")
+
+
+# -------------------------------------------------------------------------
+# ROLE SYNC CONFIG
+# -------------------------------------------------------------------------
+def load_role_sync_config() -> dict:
+    if not ROLE_SYNC_CONFIG_FILE.exists():
+        return {}
+    try:
+        with open(ROLE_SYNC_CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading role sync config: {e}")
+        return {}
+
+
+def save_role_sync_config(data: dict) -> None:
+    try:
+        with open(ROLE_SYNC_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Error saving role sync config: {e}")

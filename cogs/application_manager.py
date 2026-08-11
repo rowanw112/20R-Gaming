@@ -29,7 +29,7 @@ def load_rank_config() -> dict:
 
 
 def is_staff(interaction: discord.Interaction) -> bool:
-    """Helper check to ensure the user interacting with review buttons is a staff member."""
+    """Helper check to ensure the user interacting with review buttons is a staff member or operator."""
     if not isinstance(interaction.user, discord.Member):
         return False
 
@@ -39,19 +39,81 @@ def is_staff(interaction: discord.Interaction) -> bool:
     ):
         return True
 
+    app_cfg = load_app_config().get(str(interaction.guild.id), {})
+    op_role_id = app_cfg.get("application_operator_role_id")
+    if op_role_id and op_role_id in [r.id for r in interaction.user.roles]:
+        return True
+
     rank_cfg = load_rank_config().get(str(interaction.guild.id), {})
     staff_ids = rank_cfg.get("staff_role_ids", [])
     user_role_ids = [r.id for r in interaction.user.roles]
     return any(rid in user_role_ids for rid in staff_ids)
 
 
+def build_panel_embed() -> discord.Embed:
+    """Central embed builder for the application panel."""
+    embed = discord.Embed(
+        title="🛡️ Join the 20R Gaming Community",
+        description=(
+            "Ready to take your place in 20R? Becoming an official member unlocks full community access, "
+            "grants perks across all our game divisions, and connects you with a solid, active group of gamers.\n\n"
+            "**✨ Why Become an Official Member?**\n"
+            "• 🔓 **Full Division Access:** Gain entry to locked division channels, private strategy discussions, and rank-specific hubs.\n"
+            "• 🏆 **Exclusive Events & Matchmaking:** Priority slots in community tournaments, internal scrims, and weekly division events.\n"
+            "• 🤝 **A True Gaming Community:** Get recognized as an official part of the crew in a structured, welcoming, and supportive multi-gaming family.\n"
+            "• 📈 **Growth & Leadership:** Opportunities to step into staff, event organizing, or competitive roster roles.\n\n"
+            "---\n"
+            "**📋 How to Apply:**\n"
+            "Click the **Apply for Membership** button below to fill out a short application!"
+        ),
+        color=discord.Color.gold(),
+    )
+    embed.set_image(url=BANNER_URL)
+    return embed
+
+
+async def ensure_operator_threads(guild: discord.Guild, panel_channel: discord.TextChannel) -> dict:
+    """Ensures private operator threads exist inside the main channel."""
+    all_configs = load_app_config()
+    cfg = all_configs.get(str(guild.id), {})
+
+    thread_keys = {
+        "open_thread_id": "🔒 open-applications",
+        "approved_thread_id": "🔒 approved-applications",
+        "denied_thread_id": "🔒 denied-applications",
+    }
+
+    updated = False
+    for key, name in thread_keys.items():
+        thread_id = cfg.get(key)
+        thread = guild.get_thread(thread_id) if thread_id else None
+
+        if not thread:
+            try:
+                thread = await panel_channel.create_thread(
+                    name=name,
+                    type=discord.ChannelType.private_thread,
+                    invitable=False,
+                )
+                cfg[key] = thread.id
+                updated = True
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.error(f"Failed to create operator thread '{name}': {e}")
+
+    if updated:
+        all_configs[str(guild.id)] = cfg
+        save_app_config(all_configs)
+
+    return cfg
+
+
 # -------------------------------------------------------------------------
 # MODALS
 # -------------------------------------------------------------------------
 class MemberApplicationModal(discord.ui.Modal, title="20R Member Application"):
-    age = discord.ui.TextInput(
-        label="Age",
-        placeholder="e.g., 21",
+    age_18 = discord.ui.TextInput(
+        label="Are you 18 or older?",
+        placeholder="Type Yes or No",
         required=True,
         max_length=5,
     )
@@ -82,24 +144,19 @@ class MemberApplicationModal(discord.ui.Modal, title="20R Member Application"):
         member = interaction.user
 
         config = load_app_config().get(str(guild.id), {})
-        open_channel_id = config.get("open_channel_id")
+        open_thread_id = config.get("open_thread_id")
+        op_role_id = config.get("application_operator_role_id")
 
-        if not open_channel_id:
+        open_thread = guild.get_thread(open_thread_id) if open_thread_id else None
+
+        if not open_thread:
             await interaction.followup.send(
-                "❌ Application system is not properly configured for this server.",
+                "❌ Open applications thread is missing. Please run `/send_app_panel`.",
                 ephemeral=True,
             )
             return
 
-        open_channel = guild.get_channel(open_channel_id)
-        if not isinstance(open_channel, discord.TextChannel):
-            await interaction.followup.send(
-                "❌ Open applications channel missing or invalid.",
-                ephemeral=True,
-            )
-            return
-
-        age_val = self.age.value.strip()
+        age_val = self.age_18.value.strip().capitalize()
         steam_val = self.steam.value.strip() or "N/A"
         recruiter_val = self.recruiter.value.strip() or "N/A"
         games_val = self.games.value.strip() or "N/A"
@@ -121,7 +178,7 @@ class MemberApplicationModal(discord.ui.Modal, title="20R Member Application"):
         embed.add_field(name="Applicant", value=member.mention, inline=True)
         embed.add_field(name="Account Created", value=created_timestamp, inline=True)
         embed.add_field(name="Joined Server", value=joined_timestamp, inline=True)
-        embed.add_field(name="Age", value=age_val, inline=False)
+        embed.add_field(name="18 or Older?", value=age_val, inline=False)
         embed.add_field(name="Steam Profile", value=steam_val, inline=False)
         embed.add_field(name="Source / Recruiter", value=recruiter_val, inline=False)
         embed.add_field(name="Games Interested In", value=games_val, inline=False)
@@ -137,7 +194,14 @@ class MemberApplicationModal(discord.ui.Modal, title="20R Member Application"):
                 "username": str(member),
             },
         )
-        await open_channel.send(embed=embed, view=view)
+
+        content = None
+        if op_role_id:
+            op_role = guild.get_role(op_role_id)
+            if op_role:
+                content = f"{op_role.mention} New application submitted!"
+
+        await open_thread.send(content=content, embed=embed, view=view)
 
         try:
             dm_embed = discord.Embed(
@@ -187,13 +251,7 @@ class AskQuestionModal(discord.ui.Modal, title="Staff Question Prompt"):
         if existing_thread_entry:
             thread_id = existing_thread_entry.get("thread_id")
             thread = guild.get_thread(thread_id)
-            if not thread:
-                try:
-                    thread = await guild.fetch_channel(thread_id)
-                except (discord.NotFound, discord.HTTPException):
-                    thread = None
-
-            if isinstance(thread, discord.Thread) and not thread.archived:
+            if thread and not thread.archived:
                 await interaction.followup.send(
                     f"💬 An active thread already exists for this application: {thread.mention}",
                     ephemeral=True,
@@ -202,28 +260,25 @@ class AskQuestionModal(discord.ui.Modal, title="Staff Question Prompt"):
 
         config = load_app_config().get(str(guild.id), {})
         panel_channel_id = config.get("panel_channel_id")
+        target_channel = guild.get_channel(panel_channel_id) if panel_channel_id else interaction.channel
 
-        target_channel = (
-            guild.get_channel(panel_channel_id)
-            if panel_channel_id
-            else interaction.channel
-        )
         if not isinstance(target_channel, discord.TextChannel):
             target_channel = interaction.channel
 
         thread_name = f"app-{member.display_name if member else applicant_id}"
 
-        try:
-            thread = await target_channel.create_thread(
-                name=thread_name,
-                auto_archive_duration=4320,
-                type=discord.ChannelType.private_thread,
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            thread = await target_channel.create_thread(
-                name=thread_name,
-                auto_archive_duration=4320,
-            )
+        thread = await target_channel.create_thread(
+            name=thread_name,
+            auto_archive_duration=4320,
+            type=discord.ChannelType.private_thread,
+            invitable=False,
+        )
+
+        if member:
+            try:
+                await thread.add_user(member)
+            except discord.HTTPException:
+                pass
 
         new_threads = [t for t in app_threads if t.get("user_id") != applicant_id]
         new_threads.append(
@@ -350,13 +405,13 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Membership Application"):
             ephemeral=True,
         )
 
-        denied_channel_id = config.get("denied_channel_id")
+        denied_thread_id = config.get("denied_thread_id")
         await _archive_compressed_helper(
             interaction,
             parent_msg,
             applicant_id,
             form_data,
-            denied_channel_id,
+            denied_thread_id,
             "Denied Application",
             discord.Color.red(),
             reason_text=self.reason.value,
@@ -368,10 +423,10 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Membership Application"):
 # -------------------------------------------------------------------------
 async def _archive_compressed_helper(
     interaction: discord.Interaction | None,
-    parent_msg: discord.Message | None,
+    parent_msg: discord.Message | int | None,
     applicant_id: int,
     form_data: dict,
-    target_channel_id: int,
+    target_thread_id: int,
     status_label: str,
     color: discord.Color,
     reason_text: str | None = None,
@@ -381,8 +436,9 @@ async def _archive_compressed_helper(
     if not guild:
         return
 
-    target_channel = (
-        guild.get_channel(target_channel_id) if target_channel_id else None
+    config = load_app_config().get(str(guild.id), {})
+    target_thread = (
+        guild.get_thread(target_thread_id) if target_thread_id else None
     )
 
     app_threads = load_app_threads()
@@ -391,17 +447,40 @@ async def _archive_compressed_helper(
     )
 
     thread_to_delete = None
+    parent_msg_id = None
+    parent_msg_obj = None
+
+    if isinstance(parent_msg, discord.Message):
+        parent_msg_obj = parent_msg
+        parent_msg_id = parent_msg.id
+    elif isinstance(parent_msg, int):
+        parent_msg_id = parent_msg
+
     if target_entry:
         thread_id = target_entry.get("thread_id")
+        if not parent_msg_id:
+            parent_msg_id = target_entry.get("parent_msg_id")
         thread_to_delete = guild.get_thread(thread_id)
-        if not thread_to_delete:
-            try:
-                thread_to_delete = await guild.fetch_channel(thread_id)
-            except (discord.NotFound, discord.HTTPException):
-                thread_to_delete = None
 
         new_threads = [t for t in app_threads if t.get("user_id") != applicant_id]
         save_app_threads(new_threads)
+
+    # Resolve and fetch parent_msg in open-applications if not already a Message object
+    if not parent_msg_obj and parent_msg_id:
+        open_thread_id = config.get("open_thread_id")
+        if open_thread_id:
+            open_thread = guild.get_thread(open_thread_id)
+            if not open_thread:
+                try:
+                    open_thread = await guild.fetch_channel(open_thread_id)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
+
+            if open_thread and isinstance(open_thread, discord.Thread):
+                try:
+                    parent_msg_obj = await open_thread.fetch_message(parent_msg_id)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
 
     age = form_data.get("age", "N/A")
     steam = form_data.get("steam", "N/A")
@@ -415,7 +494,7 @@ async def _archive_compressed_helper(
     desc = (
         f"**Applicant:** <@{applicant_id}>\n"
         f"**Reviewer:** {reviewer_mention} • "
-        f"**Age:** `{age}` • **Steam:** `{steam}` • "
+        f"**18+?:** `{age}` • **Steam:** `{steam}` • "
         f"**Source:** `{source}` • **Games:** `{games}`"
     )
     if reason_text:
@@ -429,57 +508,39 @@ async def _archive_compressed_helper(
     )
     compressed_embed.set_footer(text=f"User ID: {applicant_id}")
 
-    if isinstance(target_channel, discord.TextChannel):
-        await target_channel.send(embed=compressed_embed)
+    if isinstance(target_thread, discord.Thread):
+        await target_thread.send(embed=compressed_embed)
 
-    if parent_msg:
+    # Delete the parent application embed from open-applications
+    if parent_msg_obj:
         try:
-            await parent_msg.delete()
-        except (discord.NotFound, discord.HTTPException):
-            pass
+            await parent_msg_obj.delete()
+        except (discord.NotFound, discord.HTTPException) as e:
+            logger.error(f"Failed to delete parent app message: {e}")
 
+    # Delete private discussion thread if open
     if isinstance(thread_to_delete, discord.Thread):
         try:
             await thread_to_delete.delete()
         except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
             logger.error(f"Failed to delete thread: {e}")
 
-    if interaction and isinstance(interaction.channel, discord.Thread):
-        try:
-            await interaction.channel.delete()
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            pass
-
 
 async def _process_approval_roles(guild: discord.Guild, applicant_id: int):
-    """Pulls Recruit role directly from central Rank System configuration."""
     rank_cfg = load_rank_config().get(str(guild.id), {})
     member = guild.get_member(applicant_id)
     if not member:
-        logger.error(f"[AppManager] Member with ID {applicant_id} not found in guild.")
         return []
 
     bot_member = guild.me
-    if not bot_member.guild_permissions.manage_roles:
-        logger.error(f"[AppManager] CRITICAL: Bot lacks 'Manage Roles' permission in guild '{guild.name}'!")
-
     recruit_role_id = rank_cfg.get("recruit_role_id")
     recruit_role = guild.get_role(recruit_role_id) if recruit_role_id else None
 
-    if not recruit_role:
-        logger.error(f"[AppManager] No Recruit Role configured in Rank System for guild '{guild.name}'.")
-        return []
-
-    if recruit_role.position >= bot_member.top_role.position:
-        logger.warning(
-            f"[AppManager] Recruit Role '{recruit_role.name}' (Pos: {recruit_role.position}) "
-            f"is higher than Bot Top Role '{bot_member.top_role.name}' (Pos: {bot_member.top_role.position})."
-        )
+    if not recruit_role or recruit_role.position >= bot_member.top_role.position:
         return []
 
     try:
         await member.add_roles(recruit_role, reason="Application Approved — Granted Recruit Role")
-        logger.info(f"[AppManager] Successfully assigned Recruit role '{recruit_role.name}' to {member.display_name}.")
     except discord.HTTPException as e:
         logger.error(f"[AppManager] Failed to add Recruit role: {e}")
         return []
@@ -502,7 +563,7 @@ async def _process_approval_roles(guild: discord.Guild, applicant_id: int):
 
 
 # -------------------------------------------------------------------------
-# THREAD-SPECIFIC REVIEW VIEW
+# REVIEWS VIEWS
 # -------------------------------------------------------------------------
 class ThreadReviewView(discord.ui.View):
     def __init__(
@@ -516,21 +577,18 @@ class ThreadReviewView(discord.ui.View):
         self.form_data = form_data or {}
         self.parent_msg_id = parent_msg_id
 
-    async def _get_parent_message(
-        self, interaction: discord.Interaction
-    ) -> discord.Message | None:
-        if self.parent_msg_id:
-            guild = interaction.guild
-            config = load_app_config().get(str(guild.id), {})
-            open_channel_id = config.get("open_channel_id")
-            if open_channel_id:
-                open_channel = guild.get_channel(open_channel_id)
-                if isinstance(open_channel, discord.TextChannel):
-                    try:
-                        return await open_channel.fetch_message(self.parent_msg_id)
-                    except (discord.NotFound, discord.HTTPException):
-                        pass
-        return None
+    def _resolve_thread_data(self, interaction: discord.Interaction) -> tuple[int, dict, int | None]:
+        if self.applicant_id and self.form_data:
+            return self.applicant_id, self.form_data, self.parent_msg_id
+
+        app_threads = load_app_threads()
+        entry = next(
+            (t for t in app_threads if t.get("thread_id") == interaction.channel_id), None
+        )
+        if entry:
+            return entry.get("user_id", 0), entry.get("form_data", {}), entry.get("parent_msg_id")
+
+        return 0, {}, None
 
     @discord.ui.button(
         label="Approve Application",
@@ -552,22 +610,22 @@ class ThreadReviewView(discord.ui.View):
         guild = interaction.guild
         config = load_app_config().get(str(guild.id), {})
 
-        parent_msg = await self._get_parent_message(interaction)
+        applicant_id, form_data, parent_msg_id = self._resolve_thread_data(interaction)
 
-        await _process_approval_roles(guild, self.applicant_id)
+        await _process_approval_roles(guild, applicant_id)
 
         await interaction.followup.send(
-            "✅ Application approved, granted Recruit role, and thread deleted!",
+            "✅ Application approved, granted Recruit role, and logged!",
             ephemeral=True,
         )
 
-        approved_channel_id = config.get("approved_channel_id")
+        approved_thread_id = config.get("approved_thread_id")
         await _archive_compressed_helper(
             interaction,
-            parent_msg,
-            self.applicant_id,
-            self.form_data,
-            approved_channel_id,
+            parent_msg_id,
+            applicant_id,
+            form_data,
+            approved_thread_id,
             "Approved Application",
             discord.Color.green(),
         )
@@ -581,21 +639,19 @@ class ThreadReviewView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         if not is_staff(interaction):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You do not have staff permissions to review applications!",
                 ephemeral=True,
             )
             return
 
-        parent_msg = await self._get_parent_message(interaction)
+        applicant_id, form_data, parent_msg_id = self._resolve_thread_data(interaction)
+
         await interaction.response.send_modal(
-            DenyReasonModal((self.applicant_id, self.form_data, parent_msg))
+            DenyReasonModal((applicant_id, form_data, parent_msg_id))
         )
 
 
-# -------------------------------------------------------------------------
-# PERSISTENT MAIN CHANNEL REVIEW VIEW
-# -------------------------------------------------------------------------
 class ApplicationReviewView(discord.ui.View):
     def __init__(self, applicant_id: int | None = None, form_data: dict | None = None):
         super().__init__(timeout=None)
@@ -634,7 +690,7 @@ class ApplicationReviewView(discord.ui.View):
             )
 
             for field in embed.fields:
-                if field.name == "Age":
+                if field.name in ("Age", "18 or Older?"):
                     form_data["age"] = field.value
                 elif field.name == "Steam Profile":
                     form_data["steam"] = field.value
@@ -672,13 +728,13 @@ class ApplicationReviewView(discord.ui.View):
             ephemeral=True,
         )
 
-        approved_channel_id = config.get("approved_channel_id")
+        approved_thread_id = config.get("approved_thread_id")
         await _archive_compressed_helper(
             interaction,
             interaction.message,
             applicant_id,
             form_data,
-            approved_channel_id,
+            approved_thread_id,
             "Approved Application",
             discord.Color.green(),
         )
@@ -708,13 +764,8 @@ class ApplicationReviewView(discord.ui.View):
             thread_id = existing_thread_entry.get("thread_id")
             guild = interaction.guild
             thread = guild.get_thread(thread_id)
-            if not thread:
-                try:
-                    thread = await guild.fetch_channel(thread_id)
-                except (discord.NotFound, discord.HTTPException):
-                    thread = None
 
-            if isinstance(thread, discord.Thread) and not thread.archived:
+            if thread and not thread.archived:
                 await interaction.response.send_message(
                     f"💬 An active thread already exists for this application: {thread.mention}",
                     ephemeral=True,
@@ -777,21 +828,6 @@ class ApplicationPanelLauncher(discord.ui.View):
             )
             return
 
-        config = load_app_config().get(str(guild.id), {})
-        open_channel_id = config.get("open_channel_id")
-        if open_channel_id:
-            open_channel = guild.get_channel(open_channel_id)
-            if isinstance(open_channel, discord.TextChannel):
-                async for msg in open_channel.history(limit=100):
-                    if msg.embeds:
-                        footer = msg.embeds[0].footer.text or ""
-                        if f"User ID: {member.id}" in footer:
-                            await interaction.response.send_message(
-                                "⚠️ You already have an active application pending review!",
-                                ephemeral=True,
-                            )
-                            return
-
         await interaction.response.send_modal(MemberApplicationModal())
 
 
@@ -830,15 +866,9 @@ class ApplicationManager(commands.Cog):
                 continue
 
             config = load_app_config().get(str(guild.id), {})
-            denied_channel_id = config.get("denied_channel_id")
-            open_channel_id = config.get("open_channel_id")
+            denied_thread_id = config.get("denied_thread_id")
 
             thread = guild.get_thread(thread_id)
-            if not thread:
-                try:
-                    thread = await guild.fetch_channel(thread_id)
-                except (discord.NotFound, discord.HTTPException):
-                    thread = None
 
             if isinstance(thread, discord.Thread) and thread.archived:
                 member = guild.get_member(applicant_id)
@@ -858,21 +888,12 @@ class ApplicationManager(commands.Cog):
                     except discord.HTTPException:
                         pass
 
-                parent_msg = None
-                if parent_msg_id and open_channel_id:
-                    open_channel = guild.get_channel(open_channel_id)
-                    if isinstance(open_channel, discord.TextChannel):
-                        try:
-                            parent_msg = await open_channel.fetch_message(parent_msg_id)
-                        except (discord.NotFound, discord.HTTPException):
-                            pass
-
                 await _archive_compressed_helper(
                     interaction=None,
-                    parent_msg=parent_msg,
+                    parent_msg=parent_msg_id,
                     applicant_id=applicant_id,
                     form_data=form_data,
-                    target_channel_id=denied_channel_id,
+                    target_thread_id=denied_thread_id,
                     status_label="Denied (Auto-Expired / Inactive)",
                     color=discord.Color.dark_red(),
                     reason_text="Application closed automatically due to 3 days of inactivity.",
@@ -895,115 +916,92 @@ class ApplicationManager(commands.Cog):
                 if isinstance(channel, discord.TextChannel):
                     try:
                         msg = await channel.fetch_message(panel_msg_id)
-                        await msg.edit(view=ApplicationPanelLauncher())
+                        await msg.edit(embed=build_panel_embed(), view=ApplicationPanelLauncher())
                     except (discord.NotFound, discord.HTTPException):
                         pass
 
     @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.guild or message.author.bot:
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """Auto-syncs members who earn the Application Operator role into all operator threads."""
+        guild = after.guild
+        config = load_app_config().get(str(guild.id), {})
+        op_role_id = config.get("application_operator_role_id")
+
+        if not op_role_id:
             return
 
-        app_threads = load_app_threads()
-        target_entry = next(
-            (t for t in app_threads if t.get("user_id") == message.author.id), None
-        )
-
-        if not target_entry:
+        op_role = guild.get_role(op_role_id)
+        if not op_role:
             return
 
-        thread_id = target_entry.get("thread_id")
-        thread = self.bot.get_channel(thread_id)
+        had_role = op_role in before.roles
+        has_role = op_role in after.roles
 
-        if not thread:
-            try:
-                thread = await self.bot.fetch_channel(thread_id)
-            except (discord.NotFound, discord.HTTPException):
-                new_threads = [
-                    t for t in app_threads if t.get("user_id") != message.author.id
-                ]
-                save_app_threads(new_threads)
-                return
-
-        if isinstance(thread, discord.Thread):
-            if thread.archived:
-                new_threads = [
-                    t for t in app_threads if t.get("user_id") != message.author.id
-                ]
-                save_app_threads(new_threads)
-                return
-
-            dm_embed = discord.Embed(
-                title="⚠️ Please Reply in Your Application Thread",
-                description=(
-                    f"Hi {message.author.display_name}, please post your response directly in your private server thread here:\n\n"
-                    f"👉 {thread.jump_url}"
-                ),
-                color=discord.Color.gold(),
-            )
-            await message.channel.send(embed=dm_embed)
+        if not had_role and has_role:
+            for thread_key in ("open_thread_id", "approved_thread_id", "denied_thread_id"):
+                t_id = config.get(thread_key)
+                if t_id:
+                    thread = guild.get_thread(t_id)
+                    if thread:
+                        try:
+                            await thread.add_user(after)
+                        except discord.HTTPException as e:
+                            logger.error(f"Failed to add {after.display_name} to operator thread: {e}")
 
     @app_commands.command(
         name="send_app_panel",
-        description="Configure and post the Member Application Panel.",
+        description="Configure the Member Application Panel and create private operator threads inside the panel channel.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def send_app_panel(
         self,
         interaction: discord.Interaction,
-        open_channel: discord.TextChannel,
-        approved_channel: discord.TextChannel,
-        denied_channel: discord.TextChannel,
         panel_channel: discord.TextChannel | None = None,
+        application_operator_role: discord.Role | None = None,
     ):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        target_panel_channel = panel_channel or interaction.channel
-
-        if not isinstance(target_panel_channel, discord.TextChannel):
-            await interaction.followup.send(
-                "❌ Target panel channel must be a valid text channel!",
-                ephemeral=True,
-            )
-            return
-
-        embed = discord.Embed(
-            title="🛡️ Join the 20R Gaming Community",
-            description=(
-                "Ready to take your place in 20R? Becoming an official member unlocks full community access, "
-                "grants perks across all our game divisions, and connects you with a solid, active group of gamers.\n\n"
-                "**✨ Why Become an Official Member?**\n"
-                "• 🔓 **Full Division Access:** Gain entry to locked division channels, private strategy discussions, and rank-specific hubs.\n"
-                "• 🏆 **Exclusive Events & Matchmaking:** Priority slots in community tournaments, internal scrims, and weekly division events.\n"
-                "• 🤝 **A True Gaming Community:** Get recognized as an official part of the crew in a structured, welcoming, and supportive multi-gaming family.\n"
-                "• 📈 **Growth & Leadership:** Opportunities to step into staff, event organizing, or competitive roster roles.\n\n"
-                "---\n"
-                "**📋 How to Apply:**\n"
-                "Click the **Apply for Membership** button below to fill out a short application!"
-            ),
-            color=discord.Color.gold(),
-        )
-        embed.set_image(url=BANNER_URL)
-
-        view = ApplicationPanelLauncher()
-        posted_msg = await target_panel_channel.send(embed=embed, view=view)
 
         all_configs = load_app_config()
-        all_configs[str(guild.id)] = {
-            "panel_channel_id": target_panel_channel.id,
-            "panel_message_id": posted_msg.id,
-            "open_channel_id": open_channel.id,
-            "approved_channel_id": approved_channel.id,
-            "denied_channel_id": denied_channel.id,
-        }
+        existing_cfg = all_configs.get(str(guild.id), {})
+
+        final_panel_channel = panel_channel or guild.get_channel(existing_cfg.get("panel_channel_id")) or interaction.channel
+        final_op_role = application_operator_role if application_operator_role is not None else (
+            guild.get_role(existing_cfg.get("application_operator_role_id")) if existing_cfg.get("application_operator_role_id") else None
+        )
+
+        embed = build_panel_embed()
+        view = ApplicationPanelLauncher()
+        posted_msg = await final_panel_channel.send(embed=embed, view=view)
+
+        existing_cfg["panel_channel_id"] = final_panel_channel.id
+        existing_cfg["panel_message_id"] = posted_msg.id
+        existing_cfg["application_operator_role_id"] = final_op_role.id if final_op_role else None
+
+        all_configs[str(guild.id)] = existing_cfg
         save_app_config(all_configs)
+
+        # Create/ensure private operator threads exist inside the panel channel
+        op_threads = await ensure_operator_threads(guild, final_panel_channel)
+
+        # Sync existing members with operator role into the operator threads
+        if final_op_role:
+            for m in final_op_role.members:
+                for t_key in ("open_thread_id", "approved_thread_id", "denied_thread_id"):
+                    t_id = op_threads.get(t_key)
+                    if t_id:
+                        thread = guild.get_thread(t_id)
+                        if thread:
+                            try:
+                                await thread.add_user(m)
+                            except discord.HTTPException:
+                                pass
 
         await interaction.followup.send(
             f"✅ **Application Panel Configured & Posted!**\n"
-            f"• **Posted In:** {target_panel_channel.mention}\n"
-            f"• **Open Applications Target:** {open_channel.mention}\n"
-            f"• **Approved Logs Target:** {approved_channel.mention}\n"
-            f"• **Denied Logs Target:** {denied_channel.mention}",
+            f"• **Panel Channel:** {final_panel_channel.mention}\n"
+            f"• **Application Operator Role:** {final_op_role.mention if final_op_role else 'None'}\n"
+            f"• **Private Operator Threads Created:** 🔒 `open-applications`, 🔒 `approved-applications`, 🔒 `denied-applications` inside {final_panel_channel.mention}",
             ephemeral=True,
         )
 
