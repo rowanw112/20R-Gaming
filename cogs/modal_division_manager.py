@@ -14,6 +14,8 @@ from core.database import (
     save_thread_mappings,
     load_casual_records,
     save_casual_records,
+    load_legacy_division_records,
+    save_legacy_division_records,
 )
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,74 @@ COLOR_DIVISION_STAFF = discord.Color(0xE67E22)
 COLOR_STAFF = discord.Color(0xF1C40F)
 COLOR_MEMBER = discord.Color(0xAD1457)
 COLOR_PUBLIC_GAME = discord.Color(0x2ECC71)
+
+
+def format_game_name(text: str) -> str:
+    """Capitalizes the first letter of words while preserving ALL CAPS acronyms (e.g. 'CSGO' -> 'CSGO', 'runescape' -> 'Runescape')."""
+    if not text:
+        return ""
+    words = text.strip().split()
+    formatted_words = []
+    for word in words:
+        if word.isupper():
+            formatted_words.append(word)
+        else:
+            formatted_words.append(word.capitalize())
+    return " ".join(formatted_words)
+
+
+def resolve_channel_label(game_name: str, short_name: str | None) -> str:
+    """Uses short_name for Channels & Threads ONLY if game_name exceeds 12 characters."""
+    if short_name and len(game_name) > 12:
+        return short_name
+    return game_name
+
+
+async def notify_long_name_suggestion(
+    user: discord.User | discord.Member,
+    game_name: str,
+    target_role: discord.Role,
+    has_button_name: bool,
+    has_short_name: bool,
+):
+    """Sends a single consolidated DM notice if game_name exceeds 7 or 12 characters and missing overrides."""
+    needs_button_warn = len(game_name) > 7 and not has_button_name
+    needs_short_warn = len(game_name) > 12 and not has_short_name
+
+    if needs_button_warn or needs_short_warn:
+        try:
+            embed = discord.Embed(
+                title=f"⚠️ Name Formatting Notice: {game_name}",
+                color=discord.Color.gold(),
+                timestamp=discord.utils.utcnow(),
+            )
+
+            warnings = []
+            suggestions = []
+
+            if needs_button_warn:
+                warnings.append("• **Button Text Notice (> 7 Chars):** The name may clip on reaction role dashboard buttons.")
+                suggestions.append("Set a custom button label: `new_button_name:<YourButtonLabel>`")
+
+            if needs_short_warn:
+                warnings.append("• **Channel/Thread Notice (> 12 Chars):** Channel and thread names will be auto-truncated.")
+                suggestions.append("Set a short name: `new_short_name:<YourShortName>`")
+
+            embed.description = (
+                f"The game name **{game_name}** (`{len(game_name)}` characters) exceeds formatting thresholds:\n\n"
+                + "\n".join(warnings)
+            )
+
+            sug_text = "\n".join(suggestions)
+            embed.add_field(
+                name="💡 Recommended Action",
+                value=f"Update settings using `/edit_hub_game target_role:{target_role.name}`:\n{sug_text}",
+                inline=False,
+            )
+            embed.set_footer(text="20R Hub Division Management")
+            await user.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException) as e:
+            logger.warning(f"Could not send DM to {user.display_name}: {e}")
 
 
 class ConfirmModalDeleteView(discord.ui.View):
@@ -204,6 +274,7 @@ class ModalDivisionManager(commands.Cog):
                 "• `/createcasual_game` — Create a casual role & communication thread.\n"
                 "• `/createdivision_hub` — Create a full game division setup.\n"
                 "• `/promotetodivision_hub` — Convert a casual game into a division.\n"
+                "• `/edit_hub_game` — Update game name, short name, button name, or restrictions.\n"
                 "• `/deletedivision_hub` — Teardown casual game or division.\n"
                 "• `/list_hub_divisions` — List all registered hub divisions."
             ),
@@ -214,22 +285,22 @@ class ModalDivisionManager(commands.Cog):
             if not c_id:
                 return "❌ *Not Set*"
             ch = guild.get_channel(int(c_id))
-            return ch.mention if ch else f"`ID: {c_id}` *(Not found)*"
+            return f"(`{ch.name}`): {ch.mention}" if ch else f"`ID: {c_id}` *(Not found)*"
 
         def fmt_role(r_id):
             if not r_id:
                 return "❌ *Not Set*"
             r = guild.get_role(int(r_id))
-            return r.mention if r else f"`ID: {r_id}` *(Not found)*"
+            return f"(`{r.name}`): {r.mention}" if r else f"`ID: {r_id}` *(Not found)*"
 
         embed.add_field(
             name="📍 Default Hub Destinations",
             value=(
-                f"• **Chat Hub Thread Target:** {fmt_chan(defaults.get('chat_hub_id'))}\n"
-                f"• **Clips Hub Thread Target:** {fmt_chan(defaults.get('clips_hub_id'))}\n"
-                f"• **Staff Hub Thread Target:** {fmt_chan(defaults.get('staff_hub_id'))}\n"
-                f"• **Info Channel Category:** {fmt_chan(defaults.get('info_category_id'))}\n"
-                f"• **News/Announcements Category:** {fmt_chan(defaults.get('news_category_id'))}"
+                f"• **Chat Hub Thread Target** {fmt_chan(defaults.get('chat_hub_id'))}\n"
+                f"• **Clips Hub Thread Target** {fmt_chan(defaults.get('clips_hub_id'))}\n"
+                f"• **Staff Hub Thread Target** {fmt_chan(defaults.get('staff_hub_id'))}\n"
+                f"• **Info Channel Category** {fmt_chan(defaults.get('info_category_id'))}\n"
+                f"• **Announcement Category** {fmt_chan(defaults.get('news_category_id'))}"
             ),
             inline=False,
         )
@@ -237,11 +308,11 @@ class ModalDivisionManager(commands.Cog):
         embed.add_field(
             name="🏷️ Default Role Category Anchors",
             value=(
-                f"• **Casual Roles Anchor (`─── 𝐂𝐚𝐬𝐮𝐚𝐥 ───`):** {fmt_role(defaults.get('casual_role_category_id'))}\n"
-                f"• **Public Roles Anchor (`─── 𝐏𝐮𝐛𝐥𝐢𝐜 ───`):** {fmt_role(defaults.get('public_role_category_id'))}\n"
-                f"• **Division Staff Anchor (`─── 𝐃𝐢𝐯𝐢𝐬𝐢𝐨𝐧 𝐒𝐭𝐚𝐟𝐟 ───`):** {fmt_role(defaults.get('div_staff_role_category_id'))}\n"
-                f"• **Game Staff Anchor (`─── 𝐆𝐚𝐦𝐞 𝐒𝐭𝐚𝐟𝐟 ───`):** {fmt_role(defaults.get('game_staff_role_category_id'))}\n"
-                f"• **Division Roles Anchor (`─── 𝐃𝐢𝐯𝐢𝐬𝐢𝐨𝐧𝐬 ───`):** {fmt_role(defaults.get('member_role_category_id'))}"
+                f"• **Casual Roles Anchor** {fmt_role(defaults.get('casual_role_category_id'))}\n"
+                f"• **Public Roles Anchor** {fmt_role(defaults.get('public_role_category_id'))}\n"
+                f"• **Division Staff Anchor** {fmt_role(defaults.get('div_staff_role_category_id'))}\n"
+                f"• **Game Staff Anchor** {fmt_role(defaults.get('game_staff_role_category_id'))}\n"
+                f"• **Division Roles Anchor** {fmt_role(defaults.get('member_role_category_id'))}"
             ),
             inline=False,
         )
@@ -418,11 +489,17 @@ class ModalDivisionManager(commands.Cog):
         description="Create a casual game role (anchored under Casual) and private chat thread in Chat Hub.",
     )
     @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        game_name="Full default name for game, roles, threads & channels (Required)",
+        short_name="Short name used for threads/channels if game_name > 12 chars (Optional)",
+        button_name="Custom button label for reaction role embed (Optional)",
+    )
     async def createcasual_game(
         self,
         interaction: discord.Interaction,
         game_name: str,
         short_name: str = None,
+        button_name: str = None,
         chat_hub: discord.TextChannel = None,
         casual_role_category: discord.Role = None,
     ):
@@ -437,21 +514,24 @@ class ModalDivisionManager(commands.Cog):
             await interaction.followup.send("❌ Chat Hub channel is not set. Use `/set_hub_defaults`.", ephemeral=True)
             return
 
-        clean_game = game_name.strip().title()
-        clean_short = short_name.strip().title() if short_name else clean_game
-        slug_short = clean_short.lower().replace(" ", "-")
+        clean_game = format_game_name(game_name)
+        clean_short = format_game_name(short_name) if short_name else None
+        clean_button = format_game_name(button_name) if button_name else None
 
-        # 1. Create Casual Role
-        casual_role = await guild.create_role(name=f"{clean_short}", color=COLOR_PUBLIC_GAME, mentionable=True)
+        channel_label = resolve_channel_label(clean_game, clean_short)
+        slug_short = channel_label.lower().replace(" ", "-")
+
+        # 1. Create Casual Role with Full Game Name
+        casual_role = await guild.create_role(name=clean_game, color=COLOR_PUBLIC_GAME, mentionable=True)
 
         # 2. Anchor Role under Casual divider
         if target_anchor:
             await self._anchor_roles_to_divider(guild, target_anchor, [casual_role])
 
-        # 3. Adjust permissions & Create Thread in Chat Hub
+        # 3. Adjust permissions & Create Thread in Chat Hub (appends -chat)
         await self._adjust_category_permissions(target_hub, [casual_role])
         chat_thread = await target_hub.create_thread(
-            name=slug_short,
+            name=f"{slug_short}-chat",
             type=discord.ChannelType.private_thread,
             invitable=False,
         )
@@ -465,6 +545,7 @@ class ModalDivisionManager(commands.Cog):
         casual_records.append({
             "game_name": clean_game,
             "short_name": clean_short,
+            "button_name": clean_button,  # None unless explicitly provided
             "role_id": casual_role.id,
             "thread_id": chat_thread.id,
             "is_casual": True,
@@ -480,6 +561,15 @@ class ModalDivisionManager(commands.Cog):
         if react_cog:
             await react_cog.update_react_embeds(guild)
 
+        # Send DM notice if formatting thresholds are exceeded
+        await notify_long_name_suggestion(
+            interaction.user,
+            clean_game,
+            casual_role,
+            has_button_name=bool(clean_button),
+            has_short_name=bool(clean_short),
+        )
+
         embed = discord.Embed(title=f"🎮 Casual Game Created: {clean_game}", color=discord.Color.green())
         embed.add_field(name="Role Created", value=casual_role.mention, inline=False)
         embed.add_field(name="Communication Thread", value=f"🔒 {chat_thread.mention} *(in {target_hub.mention})*", inline=False)
@@ -491,11 +581,17 @@ class ModalDivisionManager(commands.Cog):
         description="Create a division utilizing private hub threads, channels, and anchored roles.",
     )
     @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        game_name="Full default name for game, roles, threads & channels (Required)",
+        short_name="Short name used for threads/channels if game_name > 12 chars (Optional)",
+        button_name="Custom button label for reaction role embed (Optional)",
+    )
     async def create_division_hub(
         self,
         interaction: discord.Interaction,
         game_name: str,
         short_name: str = None,
+        button_name: str = None,
         is_restrictive: bool = False,
         chat_hub: discord.TextChannel = None,
         clips_hub: discord.TextChannel = None,
@@ -539,16 +635,19 @@ class ModalDivisionManager(commands.Cog):
             )
             return
 
-        clean_game = game_name.strip().title()
-        clean_short = short_name.strip().title() if short_name else clean_game
-        slug_short = clean_short.lower().replace(" ", "-")
+        clean_game = format_game_name(game_name)
+        clean_short = format_game_name(short_name) if short_name else None
+        clean_button = format_game_name(button_name) if button_name else None
+
+        channel_label = resolve_channel_label(clean_game, clean_short)
+        slug_short = channel_label.lower().replace(" ", "-")
 
         try:
-            # 1. Create Roles
-            game_role = await guild.create_role(name=f"{clean_short}", color=COLOR_PUBLIC_GAME, mentionable=True)
-            div_staff_role = await guild.create_role(name=f"{clean_short} Division Staff", color=COLOR_DIVISION_STAFF, mentionable=True)
-            staff_role = await guild.create_role(name=f"{clean_short} Staff", color=COLOR_STAFF, mentionable=True)
-            member_role = await guild.create_role(name=f"{clean_short} Division", color=COLOR_MEMBER, mentionable=True)
+            # 1. Create Roles using full game name
+            game_role = await guild.create_role(name=clean_game, color=COLOR_PUBLIC_GAME, mentionable=True)
+            div_staff_role = await guild.create_role(name=f"{clean_game} Division Staff", color=COLOR_DIVISION_STAFF, mentionable=True)
+            staff_role = await guild.create_role(name=f"{clean_game} Staff", color=COLOR_STAFF, mentionable=True)
+            member_role = await guild.create_role(name=f"{clean_game} Division", color=COLOR_MEMBER, mentionable=True)
 
             # 2. Anchor Roles Under Specified Category Dividers
             if target_pub_cat:
@@ -657,6 +756,7 @@ class ModalDivisionManager(commands.Cog):
             records.append({
                 "game_name": clean_game,
                 "short_name": clean_short,
+                "button_name": clean_button,  # None unless explicitly provided
                 "public_role_id": game_role.id,
                 "game_role_id": game_role.id,
                 "member_role_id": member_role.id,
@@ -679,6 +779,15 @@ class ModalDivisionManager(commands.Cog):
             react_cog = self.bot.get_cog("ReactForRoles")
             if react_cog:
                 await react_cog.update_react_embeds(guild)
+
+            # DM Notice evaluation
+            await notify_long_name_suggestion(
+                interaction.user,
+                clean_game,
+                game_role,
+                has_button_name=bool(clean_button),
+                has_short_name=bool(clean_short),
+            )
 
             status_type = "🔒 Restrictive (Application Only)" if is_restrictive else "🔓 Open (Auto-Synced)"
 
@@ -741,9 +850,12 @@ class ModalDivisionManager(commands.Cog):
         casual_records = load_casual_records()
         record = next((r for r in casual_records if r.get("role_id") == casual_role.id), None)
 
-        clean_game = record["game_name"] if record else casual_role.name.title()
-        clean_short = record["short_name"] if record else casual_role.name.title()
-        slug_short = clean_short.lower().replace(" ", "-")
+        clean_game = record["game_name"] if record else casual_role.name
+        clean_short = record.get("short_name") if record else None
+        clean_button = record.get("button_name") if record else None
+
+        channel_label = resolve_channel_label(clean_game, clean_short)
+        slug_short = channel_label.lower().replace(" ", "-")
 
         # Resolve Targets
         target_chat_hub = chat_hub or (guild.get_channel(defaults.get("chat_hub_id")) if defaults.get("chat_hub_id") else None)
@@ -759,9 +871,9 @@ class ModalDivisionManager(commands.Cog):
 
         # 1. Convert casual role to public game role & create Division / Staff roles
         game_role = casual_role
-        div_staff_role = await guild.create_role(name=f"{clean_short} Division Staff", color=COLOR_DIVISION_STAFF, mentionable=True)
-        staff_role = await guild.create_role(name=f"{clean_short} Staff", color=COLOR_STAFF, mentionable=True)
-        member_role = await guild.create_role(name=f"{clean_short} Division", color=COLOR_MEMBER, mentionable=True)
+        div_staff_role = await guild.create_role(name=f"{clean_game} Division Staff", color=COLOR_DIVISION_STAFF, mentionable=True)
+        staff_role = await guild.create_role(name=f"{clean_game} Staff", color=COLOR_STAFF, mentionable=True)
+        member_role = await guild.create_role(name=f"{clean_game} Division", color=COLOR_MEMBER, mentionable=True)
 
         # 2. Re-anchor all roles
         if target_pub_cat: await self._anchor_roles_to_divider(guild, target_pub_cat, [game_role])
@@ -913,6 +1025,7 @@ class ModalDivisionManager(commands.Cog):
         records.append({
             "game_name": clean_game,
             "short_name": clean_short,
+            "button_name": clean_button,
             "public_role_id": game_role.id,
             "game_role_id": game_role.id,
             "member_role_id": member_role.id,
@@ -950,6 +1063,137 @@ class ModalDivisionManager(commands.Cog):
         embed.add_field(name="Division Hub Threads", value=f"• Reused existing chat thread & created clips/staff threads.", inline=False)
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="edit_hub_game",
+        description="Update full game name, short name, button name, or restrictions for a Game.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        target_role="The Casual Role, Public Game Role, or Division Role of the game to edit",
+        new_game_name="New full default name for the game (Optional)",
+        new_short_name="New short name/abbreviation for threads & channels (Optional)",
+        new_button_name="New custom button label for reaction role embeds (Optional)",
+        is_restrictive="Set True for Restrictive (Application Only) or False for Open (Auto-Synced) (Optional)",
+    )
+    async def edit_hub_game(
+        self,
+        interaction: discord.Interaction,
+        target_role: discord.Role,
+        new_game_name: str | None = None,
+        new_short_name: str | None = None,
+        new_button_name: str | None = None,
+        is_restrictive: bool | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        if new_game_name is None and new_short_name is None and new_button_name is None and is_restrictive is None:
+            await interaction.followup.send(
+                "❌ You must specify at least one setting to update.",
+                ephemeral=True,
+            )
+            return
+
+        div_records = load_division_records()
+        casual_records = load_casual_records()
+
+        updated = False
+        game_label = ""
+        changes_summary = []
+
+        # 1. Search & Update Division Records
+        for record in div_records:
+            if target_role.id in (record.get("game_role_id"), record.get("public_role_id"), record.get("member_role_id")):
+                if new_game_name:
+                    record["game_name"] = format_game_name(new_game_name)
+                    changes_summary.append(f"• **Full Name:** `{record['game_name']}`")
+                if new_short_name:
+                    record["short_name"] = format_game_name(new_short_name)
+                    changes_summary.append(f"• **Short Name:** `{record['short_name']}`")
+                if new_button_name:
+                    record["button_name"] = format_game_name(new_button_name)
+                    changes_summary.append(f"• **Custom Button Name:** `{record['button_name']}`")
+                if is_restrictive is not None:
+                    record["is_restrictive"] = is_restrictive
+                    mode_str = "🔒 Restrictive (Application Only)" if is_restrictive else "🔓 Open (Auto-Synced)"
+                    changes_summary.append(f"• **Access Mode:** `{mode_str}`")
+
+                updated = True
+                game_label = record.get("game_name", target_role.name)
+                break
+
+        if updated:
+            save_division_records(div_records)
+
+        # 2. Search & Update Casual Records
+        if not updated:
+            for record in casual_records:
+                if record.get("role_id") == target_role.id:
+                    if new_game_name:
+                        record["game_name"] = format_game_name(new_game_name)
+                        changes_summary.append(f"• **Full Name:** `{record['game_name']}`")
+                    if new_short_name:
+                        record["short_name"] = format_game_name(new_short_name)
+                        changes_summary.append(f"• **Short Name:** `{record['short_name']}`")
+                    if new_button_name:
+                        record["button_name"] = format_game_name(new_button_name)
+                        changes_summary.append(f"• **Custom Button Name:** `{record['button_name']}`")
+                    if is_restrictive is not None:
+                        changes_summary.append("• *Note: Casual games do not support restriction modes.*")
+
+                    updated = True
+                    game_label = record.get("game_name", target_role.name)
+                    break
+
+            if updated:
+                save_casual_records(casual_records)
+
+        # 3. Search & Update Legacy Records
+        if not updated:
+            legacy_records = load_legacy_division_records()
+            for record in legacy_records:
+                if target_role.id in (record.get("game_role_id"), record.get("public_role_id"), record.get("member_role_id")):
+                    if new_game_name:
+                        record["game_name"] = format_game_name(new_game_name)
+                        changes_summary.append(f"• **Full Name:** `{record['game_name']}`")
+                    if new_short_name:
+                        record["short_name"] = format_game_name(new_short_name)
+                        changes_summary.append(f"• **Short Name:** `{record['short_name']}`")
+                    if new_button_name:
+                        record["button_name"] = format_game_name(new_button_name)
+                        changes_summary.append(f"• **Custom Button Name:** `{record['button_name']}`")
+
+                    updated = True
+                    game_label = record.get("game_name", target_role.name)
+                    break
+
+            if updated:
+                save_legacy_division_records(legacy_records)
+
+        if not updated:
+            await interaction.followup.send(
+                f"❌ Could not find a registered record matching {target_role.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        # 4. Refresh Reaction Roles Embed & Division Dashboard
+        react_cog = self.bot.get_cog("ReactForRoles")
+        if react_cog:
+            await react_cog.update_react_embeds(guild)
+
+        thread_sync_cog = self.bot.get_cog("ThreadSync")
+        if thread_sync_cog:
+            await thread_sync_cog.update_dashboard(guild)
+
+        summary_text = "\n".join(changes_summary)
+        await interaction.followup.send(
+            f"✅ **Updated Record for `{game_label}`!**\n\n"
+            f"{summary_text}\n\n"
+            f"Dashboards and reaction role buttons updated automatically.",
+            ephemeral=True,
+        )
 
     @app_commands.command(
         name="list_hub_divisions",

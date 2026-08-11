@@ -50,6 +50,8 @@ class ThreadKeeper(commands.Cog):
                 "This thread was automatically unarchived to keep it active. "
                 "If you want this thread to remain archived, please rename it to include **`archive`** in the thread title."
             )
+        except discord.NotFound:
+            pass  # Thread or channel was deleted mid-operation
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.warning(
                 f"Could not send unarchive notice in {thread.name}: {e}"
@@ -109,6 +111,9 @@ class ThreadKeeper(commands.Cog):
                     # Rate Limit Safety
                     await asyncio.sleep(1.0)
 
+            except discord.NotFound:
+                # Channel or thread was deleted during teardown/sweep; ignore cleanly
+                pass
             except (discord.Forbidden, discord.HTTPException) as e:
                 logger.error(f"Error checking archived threads in #{channel.name}: {e}")
 
@@ -155,6 +160,8 @@ class ThreadKeeper(commands.Cog):
 
                 await self.notify_unarchive_if_needed(after, is_linked)
 
+            except discord.NotFound:
+                pass  # Thread was deleted
             except discord.Forbidden:
                 logger.warning(
                     f"⚠️ Lacking permissions to unarchive thread {after.name}"

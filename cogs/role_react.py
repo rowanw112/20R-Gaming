@@ -6,10 +6,16 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from core.database import (
+    load_division_records,
+    load_casual_records,
+    load_legacy_division_records,
+)
+
 logger = logging.getLogger(__name__)
 
 CONFIG_FILE = "data/rank_system_config.json"
-DIVISIONS_FILE = "guild_categories.json"  # File where created divisions/casuals are stored
+LOGO_PATH = "data/images/20r_logo.png"
 
 
 def load_json(filepath: str) -> dict:
@@ -33,10 +39,16 @@ def save_json(filepath: str, data: dict):
 # DYNAMIC ROLE TOGGLE BUTTON & VIEW
 # -------------------------------------------------------------------------
 class RoleToggleButton(discord.ui.Button):
-    def __init__(self, label: str, role_id: int, emoji_str: str | None = None, style: discord.ButtonStyle = discord.ButtonStyle.secondary):
+    def __init__(
+        self,
+        label: str,
+        role_id: int,
+        emoji_str: str | None = None,
+        style: discord.ButtonStyle = discord.ButtonStyle.secondary,
+    ):
         custom_id = f"react_role_toggle_{role_id}"
         super().__init__(
-            label=label[:80],  # Ensures label fits on Discord button
+            label=label[:80],
             style=style,
             custom_id=custom_id,
             emoji=emoji_str if emoji_str else None,
@@ -44,27 +56,28 @@ class RoleToggleButton(discord.ui.Button):
         self.role_id = role_id
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        # Acknowledges button interaction silently without posting messages or popups
+        await interaction.response.defer()
+        
         guild = interaction.guild
-        role = guild.get_role(self.role_id)
+        if not guild:
+            return
 
+        role = guild.get_role(self.role_id)
         if not role:
-            await interaction.followup.send("❌ This role no longer exists on the server.", ephemeral=True)
             return
 
         user = interaction.user
         if role in user.roles:
             try:
-                await user.remove_roles(role, reason="React for Roles Toggle")
-                await interaction.followup.send(f"🔴 Removed role {role.mention}.", ephemeral=True)
+                await user.remove_roles(role, reason="React for Roles Button Toggle")
             except discord.HTTPException as e:
-                await interaction.followup.send(f"❌ Failed to remove role: {e}", ephemeral=True)
+                logger.error(f"Failed to remove role {role.name}: {e}")
         else:
             try:
-                await user.add_roles(role, reason="React for Roles Toggle")
-                await interaction.followup.send(f"🟢 Granted role {role.mention}!", ephemeral=True)
+                await user.add_roles(role, reason="React for Roles Button Toggle")
             except discord.HTTPException as e:
-                await interaction.followup.send(f"❌ Failed to assign role: {e}", ephemeral=True)
+                logger.error(f"Failed to assign role {role.name}: {e}")
 
 
 class DynamicRoleView(discord.ui.View):
@@ -80,17 +93,18 @@ class ReactForRoles(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        # Register persistent buttons across restarts
         self.bot.add_view(DynamicRoleView())
 
     @commands.Cog.listener()
     async def on_ready(self):
-        logger.info("[ReactForRoles] 🔄 Refreshing Reaction Role Embeds across guilds...")
+        logger.info(
+            "[ReactForRoles] 🔄 Refreshing Reaction Role Embeds across guilds..."
+        )
         for guild in self.bot.guilds:
             await self.update_react_embeds(guild)
 
     async def update_react_embeds(self, guild: discord.Guild):
-        """Scans created divisions and casual games and posts/updates paginated role embeds."""
+        """Scans hub divisions, legacy divisions, and casual games to update button embeds."""
         configs = load_json(CONFIG_FILE)
         guild_cfg = configs.get(str(guild.id), {})
         channel_id = guild_cfg.get("react_roles_channel_id")
@@ -108,35 +122,64 @@ class ReactForRoles(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
 
-        divisions_data = load_json(DIVISIONS_FILE).get(str(guild.id), {})
-        
-        # Collect Divisions & Casuals
+        division_records = load_division_records()
+        legacy_records = load_legacy_division_records()
+        casual_records = load_casual_records()
+
         divisions_list = []
         casuals_list = []
+        processed_role_ids = set()
 
-        for key, info in divisions_data.items():
-            is_casual = info.get("is_casual", False)
-            # Public Role for Divisions / Assigned Role for Casuals
-            public_role_id = info.get("public_role_id") or info.get("role_id")
-            
-            # Label priority: short_name -> division_name
-            name = info.get("short_name") or info.get("name") or key
-            emoji = info.get("emoji")
+        def build_item_entry(info: dict):
+            public_role_id = info.get("public_role_id") or info.get("game_role_id") or info.get("role_id")
+            role = guild.get_role(public_role_id) if public_role_id else None
+            if not role:
+                return None
 
-            if public_role_id and guild.get_role(public_role_id):
-                item = {
-                    "name": name,
-                    "role_id": public_role_id,
-                    "emoji": emoji,
-                }
-                if is_casual:
-                    casuals_list.append(item)
-                else:
-                    divisions_list.append(item)
+            game_name = info.get("game_name") or role.name
+            button_name = info.get("button_name")
 
-        # -----------------------------------------------------------------
-        # BUILD DIVISIONS EMBEDS & VIEWS (Paginated by 25 buttons max)
-        # -----------------------------------------------------------------
+            # STRICT BUTTON LOGIC: Use button_name if set, otherwise game_name ONLY (short_name ignored)
+            label = button_name if button_name else game_name
+
+            emoji_str = info.get("emoji")
+            emoji_obj = None
+            if emoji_str:
+                emoji_obj = emoji_str
+            elif role.display_icon and str(role.display_icon).startswith("<"):
+                emoji_obj = str(role.display_icon)
+
+            return {
+                "name": label,
+                "role_id": role.id,
+                "emoji": emoji_obj,
+            }
+
+        # 1. Process Active Hub Divisions
+        if isinstance(division_records, list):
+            for info in division_records:
+                entry = build_item_entry(info)
+                if entry and entry["role_id"] not in processed_role_ids:
+                    divisions_list.append(entry)
+                    processed_role_ids.add(entry["role_id"])
+
+        # 2. Process Legacy Divisions
+        if isinstance(legacy_records, list):
+            for info in legacy_records:
+                entry = build_item_entry(info)
+                if entry and entry["role_id"] not in processed_role_ids:
+                    divisions_list.append(entry)
+                    processed_role_ids.add(entry["role_id"])
+
+        # 3. Process Casual Games
+        if isinstance(casual_records, list):
+            for info in casual_records:
+                entry = build_item_entry(info)
+                if entry and entry["role_id"] not in processed_role_ids:
+                    casuals_list.append(entry)
+                    processed_role_ids.add(entry["role_id"])
+
+        # Deploy Gaming Divisions Embeds
         div_messages = guild_cfg.get("react_div_message_ids", [])
         new_div_msg_ids = await self._deploy_section_embeds(
             guild=guild,
@@ -146,12 +189,10 @@ class ReactForRoles(commands.Cog):
             title="🎮 Gaming Divisions",
             description="Click the corresponding button(s) below to gain full access to any of our main gaming divisions.",
             color=discord.Color.red(),
-            button_style=discord.ButtonStyle.danger
+            button_style=discord.ButtonStyle.danger,
         )
 
-        # -----------------------------------------------------------------
-        # BUILD CASUAL GAMES EMBEDS & VIEWS (Paginated by 25 buttons max)
-        # -----------------------------------------------------------------
+        # Deploy Casual Games Embeds
         casual_messages = guild_cfg.get("react_casual_message_ids", [])
         new_casual_msg_ids = await self._deploy_section_embeds(
             guild=guild,
@@ -161,10 +202,9 @@ class ReactForRoles(commands.Cog):
             title="🕹️ Casual Games & Gaming Groups",
             description="These are games we are interested in expanding into full divisions. Click below to join their channels!",
             color=discord.Color.blurple(),
-            button_style=discord.ButtonStyle.primary
+            button_style=discord.ButtonStyle.primary,
         )
 
-        # Save active message IDs
         guild_cfg["react_div_message_ids"] = new_div_msg_ids
         guild_cfg["react_casual_message_ids"] = new_casual_msg_ids
         configs[str(guild.id)] = guild_cfg
@@ -179,23 +219,34 @@ class ReactForRoles(commands.Cog):
         title: str,
         description: str,
         color: discord.Color,
-        button_style: discord.ButtonStyle
+        button_style: discord.ButtonStyle,
     ) -> list[int]:
-        """Handles chunking items into blocks of 25 buttons and editing/posting embeds."""
-        chunked_items = [items[i:i + 25] for i in range(0, len(items), 25)]
+        chunked_items = [items[i : i + 25] for i in range(0, len(items), 25)]
         if not chunked_items:
             chunked_items = [[]]
 
         new_msg_ids = []
 
         for idx, chunk in enumerate(chunked_items):
-            page_title = f"{title} (Part {idx + 1})" if len(chunked_items) > 1 else title
+            page_title = (
+                f"{title} (Part {idx + 1})" if len(chunked_items) > 1 else title
+            )
             embed = discord.Embed(
                 title=page_title,
                 description=description,
                 color=color,
+                timestamp=discord.utils.utcnow(),
             )
-            embed.set_footer(text="20R Reaction Roles System")
+
+            logo_filename = "20r_logo.png"
+            has_logo = os.path.exists(LOGO_PATH)
+
+            if has_logo:
+                embed.set_author(name="20R Gaming", icon_url=f"attachment://{logo_filename}")
+            else:
+                logger.warning(f"[ReactForRoles] ⚠️ Logo file not found at path: {os.path.abspath(LOGO_PATH)}")
+
+            embed.set_footer(text="20R Reaction Roles System • Last Updated")
 
             view = DynamicRoleView()
             for item in chunk:
@@ -208,25 +259,37 @@ class ReactForRoles(commands.Cog):
                     )
                 )
 
-            # Edit existing message or post a new one
-            msg_id = existing_msg_ids[idx] if idx < len(existing_msg_ids) else None
+            msg_id = (
+                existing_msg_ids[idx] if idx < len(existing_msg_ids) else None
+            )
             posted_msg = None
 
             if msg_id:
                 try:
                     posted_msg = await channel.fetch_message(msg_id)
-                    await posted_msg.edit(embed=embed, view=view)
+                    if has_logo:
+                        file = discord.File(LOGO_PATH, filename=logo_filename)
+                        await posted_msg.edit(embed=embed, view=view, attachments=[file])
+                    else:
+                        await posted_msg.edit(embed=embed, view=view)
                 except (discord.NotFound, discord.HTTPException):
                     posted_msg = None
 
             if not posted_msg:
-                posted_msg = await channel.send(embed=embed, view=view)
+                if has_logo:
+                    file = discord.File(LOGO_PATH, filename=logo_filename)
+                    posted_msg = await channel.send(file=file, embed=embed, view=view)
+                else:
+                    posted_msg = await channel.send(embed=embed, view=view)
+
                 try:
                     await posted_msg.pin(reason="React for Roles Section")
-                    # Delete the Discord "pinned a message" notification
                     await asyncio.sleep(0.5)
                     async for sys_msg in channel.history(limit=5):
-                        if sys_msg.type == discord.MessageType.pins_add and sys_msg.author == self.bot.user:
+                        if (
+                            sys_msg.type == discord.MessageType.pins_add
+                            and sys_msg.author == self.bot.user
+                        ):
                             await sys_msg.delete()
                             break
                 except (discord.Forbidden, discord.HTTPException):
@@ -234,9 +297,8 @@ class ReactForRoles(commands.Cog):
 
             new_msg_ids.append(posted_msg.id)
 
-        # Clean up leftover messages if total pages decreased
         if len(existing_msg_ids) > len(new_msg_ids):
-            for old_id in existing_msg_ids[len(new_msg_ids):]:
+            for old_id in existing_msg_ids[len(new_msg_ids) :]:
                 try:
                     old_msg = await channel.fetch_message(old_id)
                     await old_msg.delete()
@@ -250,7 +312,7 @@ class ReactForRoles(commands.Cog):
     # -------------------------------------------------------------------------
     @app_commands.command(
         name="set_react_channel",
-        description="Set the channel to maintain live Gaming Division & Casual reaction role embeds.",
+        description="Set the channel to maintain live Gaming Division & Casual reaction role button embeds.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def set_react_channel(
@@ -273,18 +335,21 @@ class ReactForRoles(commands.Cog):
         await self.update_react_embeds(interaction.guild)
 
         await interaction.followup.send(
-            f"✅ React for Roles Dashboard set up in {target_channel.mention}!", ephemeral=True
+            f"✅ React for Roles Dashboard set up in {target_channel.mention}!",
+            ephemeral=True,
         )
 
     @app_commands.command(
         name="refresh_react_roles",
-        description="Manually trigger an auto-update for all reaction role embeds.",
+        description="Manually trigger an auto-update for all reaction role button embeds.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def refresh_react_roles(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await self.update_react_embeds(interaction.guild)
-        await interaction.followup.send("✅ Reaction Role embeds refreshed!", ephemeral=True)
+        await interaction.followup.send(
+            "✅ Reaction Role embeds refreshed!", ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):

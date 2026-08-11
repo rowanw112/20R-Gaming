@@ -14,5 +14,23 @@
             1536481985936105574
         ],
         "is_restrictive": false
+    },
+    {
+        "game_name": "World Of Warcraft",
+        "short_name": "World Of Warcraft",
+        "public_role_id": 1536825482471940146,
+        "game_role_id": 1536825482471940146,
+        "member_role_id": 1536826994053095444,
+        "staff_role_id": 1536826993121829025,
+        "div_staff_role_id": 1536826992165519430,
+        "info_channel_id": 1536827008007278662,
+        "news_channel_id": 1536827009035014216,
+        "thread_ids": [
+            1536825485214875748,
+            1536827011236888627,
+            1536827013275328532
+        ],
+        "is_restrictive": false,
+        "is_casual": false
     }
 ]

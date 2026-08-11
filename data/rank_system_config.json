@@ -49,6 +49,13 @@
             "1533542613238415632": "[TS]",
             "1533542768532787230": "[M]"
         },
-        "custom_prefix_role_id": 1536790182689513483
+        "custom_prefix_role_id": 1536790182689513483,
+        "react_roles_channel_id": 1536794505506721792,
+        "react_div_message_ids": [
+            1536830639180091396
+        ],
+        "react_casual_message_ids": [
+            1536797794835239065
+        ]
     }
 }
