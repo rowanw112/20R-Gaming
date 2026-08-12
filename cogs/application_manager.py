@@ -267,12 +267,22 @@ class AskQuestionModal(discord.ui.Modal, title="Staff Question Prompt"):
 
         thread_name = f"app-{member.display_name if member else applicant_id}"
 
-        thread = await target_channel.create_thread(
-            name=thread_name,
-            auto_archive_duration=4320,
-            type=discord.ChannelType.private_thread,
-            invitable=False,
-        )
+        try:
+            # Try 3-day archive duration (Requires Boost Level 1/2 depending on server age)
+            thread = await target_channel.create_thread(
+                name=thread_name,
+                auto_archive_duration=4320,
+                type=discord.ChannelType.private_thread,
+                invitable=False,
+            )
+        except discord.HTTPException:
+            # Fallback to standard 24-hour duration if the server lacks the required boost level
+            thread = await target_channel.create_thread(
+                name=thread_name,
+                auto_archive_duration=1440,
+                type=discord.ChannelType.private_thread,
+                invitable=False,
+            )
 
         if member:
             try:

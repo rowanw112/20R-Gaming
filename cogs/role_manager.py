@@ -85,6 +85,10 @@ class StaffHierarchyOrderSelect(discord.ui.Select):
         if cog:
             await cog.update_rank_dashboard(guild)
 
+        rank_disp = interaction.client.get_cog("RankDisplay")
+        if rank_disp:
+            await rank_disp.update_public_display(guild)
+
         summary = "\n".join([f"{idx+1}. <@&{rid}>" for idx, rid in enumerate(ordered_ids)])
         await interaction.followup.send(
             f"✅ **Staff Hierarchy Saved (Highest ➔ Lowest):**\n{summary}",
@@ -129,9 +133,63 @@ class RankHierarchyOrderSelect(discord.ui.Select):
         if cog:
             await cog.update_rank_dashboard(guild)
 
+        rank_disp = interaction.client.get_cog("RankDisplay")
+        if rank_disp:
+            await rank_disp.update_public_display(guild)
+
         summary = "\n".join([f"{idx+1}. <@&{rid}>" for idx, rid in enumerate(ordered_ids)])
         await interaction.followup.send(
             f"✅ **Rank Progression Hierarchy Saved (Highest ➔ Lowest):**\n{summary}",
+            ephemeral=True,
+        )
+
+
+class BasicHierarchyOrderSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, basic_roles: list[discord.Role]):
+        self.guild = guild
+        self.basic_roles = basic_roles
+
+        options = [
+            discord.SelectOption(
+                label=r.name[:100],
+                value=str(r.id),
+                description=f"Role ID: {r.id}"
+            )
+            for r in basic_roles[:25]
+        ]
+
+        super().__init__(
+            placeholder="Select Visitor Roles in HIGHEST to LOWEST order...",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        ordered_ids = [int(v) for v in self.values]
+        
+        configs = load_json(CONFIG_FILE)
+        cfg = configs.get(str(guild.id), {})
+        
+        # We save this to basic_role_ids to keep it cohesive
+        cfg["basic_role_ids"] = ordered_ids
+        configs[str(guild.id)] = cfg
+        save_json(CONFIG_FILE, configs)
+
+        cog = interaction.client.get_cog("RoleManager")
+        if cog:
+            await cog.update_rank_dashboard(guild)
+
+        rank_disp = interaction.client.get_cog("RankDisplay")
+        if rank_disp:
+            await rank_disp.update_public_display(guild)
+
+        summary = "\n".join([f"{idx+1}. <@&{rid}>" for idx, rid in enumerate(ordered_ids)])
+        await interaction.followup.send(
+            f"✅ **Visitor & Guest Hierarchy Saved (Highest ➔ Lowest):**\n{summary}",
             ephemeral=True,
         )
 
@@ -172,6 +230,26 @@ class HierarchyCategorySelectView(discord.ui.View):
         select_view.add_item(RankHierarchyOrderSelect(self.guild, rank_roles))
         await interaction.response.send_message(
             "Select the rank roles below in order from **HIGHEST rank** to **LOWEST rank**:",
+            view=select_view,
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Re-Order Visitor/Guest Tiers", style=discord.ButtonStyle.secondary, emoji="🔰")
+    async def configure_basic(self, interaction: discord.Interaction, button: discord.ui.Button):
+        basic_ids = self.cfg.get("basic_role_ids", [])
+        visitor_ids = self.cfg.get("visitor_role_ids", [])
+        combined_ids = list(set(basic_ids + visitor_ids))
+
+        basic_roles = [self.guild.get_role(rid) for rid in combined_ids if self.guild.get_role(rid)]
+
+        if not basic_roles:
+            await interaction.response.send_message("❌ No visitor/guest roles configured yet. Run `/setup_rank_roles` first!", ephemeral=True)
+            return
+
+        select_view = discord.ui.View(timeout=60)
+        select_view.add_item(BasicHierarchyOrderSelect(self.guild, basic_roles))
+        await interaction.response.send_message(
+            "Select the visitor/guest roles below in order from **HIGHEST guest** (e.g. Friend) to **ENTRY level** (e.g. Stranger):",
             view=select_view,
             ephemeral=True
         )
@@ -224,6 +302,10 @@ class BatchPrefixFormModal(discord.ui.Modal):
         cog = interaction.client.get_cog("RoleManager")
         if cog:
             await cog.update_rank_dashboard(guild)
+
+        rank_disp = interaction.client.get_cog("RankDisplay")
+        if rank_disp:
+            await rank_disp.update_public_display(guild)
 
         summary_text = "\n".join(updated_summary) if updated_summary else "No changes made."
         logger.info(f"[RoleManager] Prefix tags updated by {interaction.user.display_name} in guild '{guild.name}'.")
@@ -446,11 +528,17 @@ class RoleManager(commands.Cog):
 
         if not active_prefix:
             return
+            
+        def clean_tag(tag: str) -> str:
+            clean = tag.strip().strip("[]()")
+            return f"[{clean}]"
+
+        formatted_prefix = clean_tag(active_prefix)
 
         current_nick = member.display_name
         clean_name = re.sub(r"^\[.*?\]\s*|^\(.*?\)\s*", "", current_nick).strip()
 
-        target_nick = f"{active_prefix} {clean_name}"[:32]
+        target_nick = f"{formatted_prefix} {clean_name}"[:32]
 
         if current_nick != target_nick:
             try:
@@ -492,18 +580,24 @@ class RoleManager(commands.Cog):
 
         prefixes = cfg.get("role_prefixes", {})
 
+        def clean_tag_display(tag: str | None) -> str:
+            if not tag:
+                return "None"
+            clean = tag.strip().strip("[]()")
+            return f"[{clean}]"
+
         basic_ids = cfg.get("basic_role_ids", [])
         visitor_ids = cfg.get("visitor_role_ids", [])
-        combined_basic_ids = list(set(basic_ids + visitor_ids))
+        combined_basic_ids = list(dict.fromkeys(basic_ids + visitor_ids))
 
         basic_roles = [guild.get_role(rid) for rid in combined_basic_ids if guild.get_role(rid)]
         basic_formatted = [
-            f"{r.mention} [`{prefixes.get(str(r.id), 'None')}`]" for r in basic_roles
+            f"{r.mention} [`{clean_tag_display(prefixes.get(str(r.id)))}`]" for r in basic_roles
         ]
         basic_str = ", ".join(basic_formatted) if basic_formatted else "`None Configured`"
 
         recruit_role = guild.get_role(cfg.get("recruit_role_id", 0))
-        recruit_pfx = prefixes.get(str(recruit_role.id)) if recruit_role else None
+        recruit_pfx = clean_tag_display(prefixes.get(str(recruit_role.id))) if recruit_role else None
         recruit_str = (
             f"{recruit_role.mention} [`{recruit_pfx or 'None'}`]"
             if recruit_role
@@ -519,14 +613,14 @@ class RoleManager(commands.Cog):
         staff_ids = cfg.get("staff_role_ids", [])
         staff_roles = [guild.get_role(rid) for rid in staff_ids if guild.get_role(rid)]
         staff_formatted = [
-            f"{r.mention} [`{prefixes.get(str(r.id), 'None')}`]" for r in staff_roles
+            f"{r.mention} [`{clean_tag_display(prefixes.get(str(r.id)))}`]" for r in staff_roles
         ]
         staff_str = " ➔ ".join(staff_formatted) if staff_formatted else "`None Configured`"
 
         rank_ids = cfg.get("rank_role_ids", [])
         rank_roles = [guild.get_role(rid) for rid in rank_ids if guild.get_role(rid)]
         ranks_formatted = [
-            f"{r.mention} [`{prefixes.get(str(r.id), 'None')}`]" for r in rank_roles
+            f"{r.mention} [`{clean_tag_display(prefixes.get(str(r.id)))}`]" for r in rank_roles
         ]
         ranks_str = " ➔ ".join(ranks_formatted) if ranks_formatted else "`None Configured`"
 

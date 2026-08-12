@@ -271,11 +271,11 @@ class ModalDivisionManager(commands.Cog):
                 "• `/set_hub_defaults` — Update default hub channels & role anchors.\n"
                 "• `/set_hub_dashboard_channel` — Move this dashboard embed.\n\n"
                 "**🎮 Creation & Management:**\n"
-                "• `/createcasual_game` — Create a casual role & communication thread.\n"
-                "• `/createdivision_hub` — Create a full game division setup.\n"
-                "• `/promotetodivision_hub` — Convert a casual game into a division.\n"
+                "• `/create_casual_game` — Create a casual role & communication thread.\n"
+                "• `/create_division_hub` — Create a full game division setup.\n"
+                "• `/promote_to_division_hub` — Convert a casual game into a division.\n"
                 "• `/edit_hub_game` — Update game name, short name, button name, or restrictions.\n"
-                "• `/deletedivision_hub` — Teardown casual game or division.\n"
+                "• `/delete_division_hub` — Teardown casual game or division.\n"
                 "• `/list_hub_divisions` — List all registered hub divisions."
             ),
             inline=False,
@@ -485,7 +485,7 @@ class ModalDivisionManager(commands.Cog):
         )
 
     @app_commands.command(
-        name="createcasual_game",
+        name="create_casual_game",
         description="Create a casual game role (anchored under Casual) and private chat thread in Chat Hub.",
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -577,7 +577,7 @@ class ModalDivisionManager(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(
-        name="createdivision_hub",
+        name="create_division_hub",
         description="Create a division utilizing private hub threads, channels, and anchored roles.",
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -828,7 +828,7 @@ class ModalDivisionManager(commands.Cog):
             await interaction.followup.send(f"❌ Creation failed: `{e}`", ephemeral=True)
 
     @app_commands.command(
-        name="promotetodivision_hub",
+        name="promote_to_division_hub",
         description="Promote an existing casual game into a full division.",
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -1225,7 +1225,7 @@ class ModalDivisionManager(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(
-        name="deletedivision_hub",
+        name="delete_division_hub",
         description="Delete a division or casual game's threads, channels, and roles.",
     )
     @app_commands.checks.has_permissions(administrator=True)

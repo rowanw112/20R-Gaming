@@ -1,4 +1,5 @@
 import logging
+import os
 import discord
 from discord.ext import commands
 
@@ -8,18 +9,14 @@ CONFIG = {
     # Production Server Configuration
     531243268256694313: {
         "WELCOME_CHANNEL_ID": 589941950837293070,
-        "DEFAULT_ROLES": [
-            588931614017323058,  # Production Stranger Role
-        ],
     },
     # Test Server Configuration
     1530922810275528774: {
         "WELCOME_CHANNEL_ID": 1533549537967214652,  # Test Join/Leave Channel
-        "DEFAULT_ROLES": [
-            1533544079156314313,  # Test Stranger Role
-        ],
     },
 }
+
+WELCOME_IMAGE_PATH = "data/images/20r-show-channels.png"
 
 
 class Welcome(commands.Cog):
@@ -35,22 +32,44 @@ class Welcome(commands.Cog):
             logger.warning(f"Join event in unconfigured guild: {member.guild.name} ({guild_id})")
             return
 
-        # 1. Assign Default Join Roles (Stranger Role) — SKIPPED FOR BOTS
+        # 1. Send Welcome Instructions DM (Replaces Default Role Assignment)
         if not member.bot:
-            roles_to_add = []
-            for role_id in guild_config.get("DEFAULT_ROLES", []):
-                role = member.guild.get_role(role_id)
-                if role and role not in member.roles:
-                    roles_to_add.append(role)
+            embed = discord.Embed(
+                title="Welcome to the official 20r discord!",
+                description=(
+                    "Please ensure that you have the **\"Show All Channels\"** option enabled.\n"
+                    "This will make the Discord server easier to navigate and ensure that you don't miss "
+                    "any useful channels. If you find that you prefer not to use it, you can always "
+                    "disable it later.\n\n"
+                    "To enable this option, follow these steps:\n\n"
+                    "**1.** Click on the server name **20R Gaming** at the top of your Discord app.\n"
+                    "**2.** In the drop-down menu, click on **\"Show All Channels\"**.\n"
+                    "**3.** Make sure there is a checkmark next to it.\n\n"
+                    "I have provided a picture below to show you what it is supposed to look like.\n\n"
+                    "Thank you for your cooperation and enjoy your stay!"
+                ),
+                color=discord.Color.blurple(),
+            )
 
-            if roles_to_add:
-                try:
-                    await member.add_roles(*roles_to_add, reason="Auto-assigned on server join")
-                    logger.info(f"Assigned default join roles to {member.display_name}")
-                except discord.HTTPException as e:
-                    logger.error(f"Failed to assign default roles to {member.display_name}: {e}")
+            files = []
+            if os.path.exists(WELCOME_IMAGE_PATH):
+                filename = "20r-show-channels.png"
+                file = discord.File(WELCOME_IMAGE_PATH, filename=filename)
+                embed.set_image(url=f"attachment://{filename}")
+                files.append(file)
+            else:
+                logger.warning(f"[Welcome] ⚠️ Image not found at path: {os.path.abspath(WELCOME_IMAGE_PATH)}")
 
-        # 2. Send Welcome Embed Card
+            try:
+                if files:
+                    await member.send(embed=embed, files=files)
+                else:
+                    await member.send(embed=embed)
+                logger.info(f"Successfully sent welcome instruction DM to {member.display_name}")
+            except (discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(f"Could not send welcome DM to {member.display_name} (DMs might be closed): {e}")
+
+        # 2. Send Public Welcome Embed Card in Channel
         channel_id = guild_config.get("WELCOME_CHANNEL_ID")
         channel = member.guild.get_channel(channel_id)
 

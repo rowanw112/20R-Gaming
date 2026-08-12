@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import discord
 from discord import app_commands
@@ -42,6 +43,7 @@ class ConfirmDeleteView(discord.ui.View):
             try:
                 await channel.delete(reason=f"Division Teardown requested by {self.user}")
                 deleted_channels += 1
+                await asyncio.sleep(0.5)  # Rate Limit Safety
             except discord.HTTPException as e:
                 logger.error(f"Failed to delete channel {channel.name}: {e}")
 
@@ -56,6 +58,7 @@ class ConfirmDeleteView(discord.ui.View):
             try:
                 await role.delete(reason=f"Division Teardown requested by {self.user}")
                 deleted_roles += 1
+                await asyncio.sleep(0.5)  # Rate Limit Safety
             except discord.HTTPException as e:
                 logger.error(f"Failed to delete role {role.name}: {e}")
 
@@ -88,7 +91,7 @@ class DivisionManager(commands.Cog):
     # 1. CREATE DIVISION
     # -------------------------------------------------------------------------
     @app_commands.command(
-        name="createdivision",
+        name="create_division",
         description="Automates the creation of a full game division with custom roles, category, and channels.",
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -117,7 +120,6 @@ class DivisionManager(commands.Cog):
         category_name = f"{clean_game} Division"
 
         try:
-            # 1. Create Roles
             logger.info(
                 f"Creating division roles for '{clean_game}' (Short: '{clean_short}')..."
             )
@@ -143,7 +145,6 @@ class DivisionManager(commands.Cog):
                 reason=f"Division Setup: Created by {interaction.user}",
             )
 
-            # 2. Build Category Permission Overwrites
             category_overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
                     view_channel=False
@@ -209,15 +210,12 @@ class DivisionManager(commands.Cog):
                 ),
             }
 
-            # 3. Create Category
             category = await guild.create_category(
                 name=category_name,
                 overwrites=category_overwrites,
                 reason=f"Division Setup: Created by {interaction.user}",
             )
 
-            # 4. Create Channels with Explicit Overwrites
-            # Read-Only Channels: Members can read/react, Staff can write/manage
             read_only_overwrites = {
                 member_role: discord.PermissionOverwrite(
                     view_channel=True, send_messages=False, add_reactions=True, read_message_history=True
@@ -244,7 +242,6 @@ class DivisionManager(commands.Cog):
                 reason=f"Division Setup: Created by {interaction.user}",
             )
 
-            # Synchronized Channels (inherit permissions directly from Category)
             general_chan = await guild.create_text_channel(
                 name=f"{slug_short}-general",
                 category=category,
@@ -257,7 +254,6 @@ class DivisionManager(commands.Cog):
                 reason=f"Division Setup: Created by {interaction.user}",
             )
 
-            # Private Staff Channel Overwrites
             staff_chan_overwrites = {
                 guild.default_role: discord.PermissionOverwrite(view_channel=False),
                 member_role: discord.PermissionOverwrite(view_channel=False),
@@ -316,7 +312,7 @@ class DivisionManager(commands.Cog):
     # 2. DELETE DIVISION
     # -------------------------------------------------------------------------
     @app_commands.command(
-        name="deletedivision",
+        name="delete_division",
         description="Safely deletes a division category, all nested channels, and optionally associated roles.",
     )
     @app_commands.checks.has_permissions(administrator=True)

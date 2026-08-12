@@ -32,5 +32,24 @@
         ],
         "is_restrictive": false,
         "is_casual": false
+    },
+    {
+        "game_name": "Strategy",
+        "short_name": null,
+        "button_name": null,
+        "public_role_id": 1536864665324363858,
+        "game_role_id": 1536864665324363858,
+        "member_role_id": 1536864668197322773,
+        "staff_role_id": 1536864667258064936,
+        "div_staff_role_id": 1536864666347634838,
+        "info_channel_id": 1536864682692972594,
+        "news_channel_id": 1536864683749810276,
+        "thread_ids": [
+            1536864684727210064,
+            1536864685868064849,
+            1536864686979424286
+        ],
+        "is_restrictive": false,
+        "is_casual": false
     }
 ]

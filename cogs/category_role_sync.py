@@ -1,5 +1,6 @@
 import logging
 import discord
+import asyncio
 from discord import app_commands
 from discord.ext import commands
 
@@ -42,6 +43,8 @@ class CategoryRoleSync(commands.Cog):
             for member in guild.members:
                 try:
                     await self.sync_member_categories(member)
+                    # Yield to the event loop so the bot doesn't freeze on large servers
+                    await asyncio.sleep(0.1)
                 except Exception as e:
                     logger.error(f"[CategorySync] Startup error for {member.display_name}: {e}")
         logger.info("[CategoryRoleSync] ✅ Startup category divider audit complete!")
@@ -113,7 +116,7 @@ class CategoryRoleSync(commands.Cog):
     # MANAGEMENT COMMANDS
     # -------------------------------------------------------------------------
     @app_commands.command(
-        name="synccategoryroles",
+        name="sync_category_roles",
         description="Force a full audit across all server members and bots to sync category divider roles.",
     )
     @app_commands.checks.has_permissions(administrator=True)

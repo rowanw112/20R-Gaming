@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import discord
@@ -38,7 +39,7 @@ class AdminUtils(commands.Cog):
     # 1. BULK NICKNAME RENAMER
     # -------------------------------------------------------------------------
     @app_commands.command(
-        name="updatenames",
+        name="update_names",
         description="Mass update member display names by replacing or removing a target prefix/text.",
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -73,6 +74,11 @@ class AdminUtils(commands.Cog):
                 except discord.HTTPException as e:
                     logger.error(f"Failed to update nickname for {member.display_name}: {e}")
                     failed_count += 1
+                
+                # Pause every 10 updates to prevent hitting Discord's rate limits
+                if updated_count % 10 == 0:
+                    await asyncio.sleep(1.5)
+                    
 
         await interaction.followup.send(
             f"**Bulk Rename Complete**\n"
@@ -85,7 +91,7 @@ class AdminUtils(commands.Cog):
     # 2. ROLE MIGRATION TOOL
     # -------------------------------------------------------------------------
     @app_commands.command(
-        name="updateroles",
+        name="update_roles",
         description="Migrate all members from an old role to a new role.",
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -125,6 +131,10 @@ class AdminUtils(commands.Cog):
             except discord.HTTPException as e:
                 logger.error(f"Failed role migration for {member.display_name}: {e}")
                 failed_count += 1
+                
+            # Pause every 10 updates to prevent hitting Discord's rate limits
+            if success_count % 10 == 0:
+                await asyncio.sleep(1.5)
 
         await interaction.followup.send(
             f"**Role Migration Complete**\n"
@@ -235,7 +245,7 @@ class AdminUtils(commands.Cog):
     # 5. MENTION PERMISSION LOCKDOWN TOOL
     # -------------------------------------------------------------------------
     @app_commands.command(
-        name="restrictmentions",
+        name="restrict_mentions",
         description="Lock down role settings to prevent roles from being mentioned or pinging @everyone.",
     )
     @app_commands.checks.has_permissions(administrator=True)

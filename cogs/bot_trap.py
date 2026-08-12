@@ -55,7 +55,7 @@ class BotTrap(commands.Cog):
     # 1. SETUP COMMAND
     # -------------------------------------------------------------------------
     @app_commands.command(
-        name="setupbait",
+        name="setup_bait",
         description="Sets up a bot bait channel with the severe warning embed and persistent ban counter.",
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -100,7 +100,7 @@ class BotTrap(commands.Cog):
     # 2. REFRESH / UPDATE EMBED COMMAND
     # -------------------------------------------------------------------------
     @app_commands.command(
-        name="updatebaitembed",
+        name="update_bait_embed",
         description="Refreshes the warning embed in the configured bait channel without resetting stats.",
     )
     @app_commands.checks.has_permissions(administrator=True)

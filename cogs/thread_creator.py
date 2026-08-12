@@ -17,10 +17,10 @@ class ThreadCreator(commands.Cog):
         self.bot = bot
 
     @app_commands.command(
-        name="createthreads",
+        name="create_threads",
         description="Bulk creates threads and optionally links a role with auto-sync access.",
     )
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.describe(
         thread_names="List of thread names (separated by newlines or commas)",
         role="Optional role to link to these threads for auto-sync access",
@@ -45,7 +45,6 @@ class ThreadCreator(commands.Cog):
             )
             return
 
-        # Parse thread names sequentially (preserving original list order)
         raw_list = thread_names.replace(",", "\n").split("\n")
         parsed_names = [name.strip() for name in raw_list if name.strip()]
 
@@ -59,7 +58,7 @@ class ThreadCreator(commands.Cog):
         created_threads = []
         failed_threads = []
 
-        mappings = load_thread_mappings()
+        mappings = load_thread_mappings() or []
 
         for name in parsed_names:
             try:
@@ -74,7 +73,6 @@ class ThreadCreator(commands.Cog):
                     reason=f"Bulk creation requested by {interaction.user}",
                 )
 
-                # Ensure bot and command author are added
                 try:
                     await thread.add_user(discord.Object(id=self.bot.user.id))
                 except discord.HTTPException:
@@ -85,7 +83,6 @@ class ThreadCreator(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-                # If a role is provided, register mapping and add current members
                 if role:
                     exists = any(
                         item.get("role_id") == role.id
@@ -101,7 +98,6 @@ class ThreadCreator(commands.Cog):
                             }
                         )
 
-                    # Pre-add members currently holding the role
                     for member in role.members:
                         if not member.bot:
                             try:
@@ -116,14 +112,12 @@ class ThreadCreator(commands.Cog):
             except discord.HTTPException as e:
                 failed_threads.append(f"`{name}` ({e.text})")
 
-        # Save mappings and trigger dashboard update if a role was linked
         if role and created_threads:
             save_thread_mappings(mappings)
             thread_sync_cog = self.bot.get_cog("ThreadSync")
             if thread_sync_cog:
                 await thread_sync_cog.update_dashboard(interaction.guild)
 
-        # Build Response Summary
         summary = [
             f"✅ **Successfully created {len(created_threads)} {thread_type_str} thread(s) in {target_channel.mention}:**"
         ]
@@ -140,12 +134,97 @@ class ThreadCreator(commands.Cog):
 
         await interaction.followup.send("\n".join(summary), ephemeral=True)
 
+    @app_commands.command(
+        name="link_thread",
+        description="Link a role to a private thread for auto-sync access.",
+    )
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def link_thread(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        thread: discord.Thread,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        mappings = load_thread_mappings() or []
+        exists = any(
+            m.get("role_id") == role.id and m.get("thread_id") == thread.id
+            for m in mappings
+        )
+
+        if exists:
+            await interaction.followup.send(
+                f"⚠️ {role.mention} is already linked to {thread.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        mappings.append(
+            {
+                "role_id": role.id,
+                "thread_id": thread.id,
+                "created_by": interaction.user.id,
+            }
+        )
+        save_thread_mappings(mappings)
+
+        thread_sync_cog = self.bot.get_cog("ThreadSync")
+        if thread_sync_cog:
+            await thread_sync_cog.run_full_thread_audit(interaction.guild)
+            await thread_sync_cog.update_dashboard(interaction.guild)
+
+        await interaction.followup.send(
+            f"✅ Linked {role.mention} ➔ {thread.mention}! Role holders have been synchronized.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="unlink_thread",
+        description="Unlink a role from a private thread.",
+    )
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def unlink_thread(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        thread: discord.Thread,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        mappings = load_thread_mappings() or []
+        new_mappings = [
+            m
+            for m in mappings
+            if not (m.get("role_id") == role.id and m.get("thread_id") == thread.id)
+        ]
+
+        if len(new_mappings) == len(mappings):
+            await interaction.followup.send(
+                f"⚠️ No active mapping found between {role.mention} and {thread.mention}.",
+                ephemeral=True,
+            )
+            return
+
+        save_thread_mappings(new_mappings)
+
+        thread_sync_cog = self.bot.get_cog("ThreadSync")
+        if thread_sync_cog:
+            await thread_sync_cog.update_dashboard(interaction.guild)
+
+        await interaction.followup.send(
+            f"✅ Unlinked {role.mention} from {thread.mention}.",
+            ephemeral=True,
+        )
+
     @create_threads.error
-    async def create_threads_error(
+    @link_thread.error
+    @unlink_thread.error
+    async def command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
         if isinstance(error, app_commands.MissingPermissions):
-            msg = "❌ You do not have permission to run this command."
+            msg = "❌ You need the `Manage Roles` permission to run this command."
             if interaction.response.is_done():
                 await interaction.followup.send(msg, ephemeral=True)
             else:

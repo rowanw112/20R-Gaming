@@ -7,47 +7,68 @@ from discord.ext import commands
 logger = logging.getLogger(__name__)
 
 # Explicit command-level category overrides
+# Explicit command-level category overrides
 COMMAND_CATEGORY_OVERRIDES = {
     # 🛠️ General & Server Setup
     "setup_command_list": "🛠️ General & Server Setup",
     "setup_server_stats": "🛠️ General & Server Setup",
-    "ping": "🛠️ General & Server Setup",
+    "setup_bait": "🛠️ General & Server Setup",
+    "update_bait_embed": "🛠️ General & Server Setup",
     "logs": "🛠️ General & Server Setup",
-    "sync": "🛠️ General & Server Setup",
-    "reload": "🛠️ General & Server Setup",
+    "clear": "🛠️ General & Server Setup",
     
     # 🎭 Role Management
-    "createroles": "🎭 Role Management",
-    "createroles_in_category": "🎭 Role Management",
-    "set_category_roles": "🎭 Role Management",
+    "create_roles": "🎭 Role Management",
+    "sync_category_roles": "🎭 Role Management",
+    "setup_rank_roles": "🎭 Role Management",
+    "set_rank_dashboard": "🎭 Role Management",
+    "force_rank_audit": "🎭 Role Management",
+    "update_roles": "🎭 Role Management",
+    "update_names": "🎭 Role Management",
+    "restrict_mentions": "🎭 Role Management",
+    "set_react_channel": "🎭 Role Management",
+    "refresh_react_roles": "🎭 Role Management",
 
     # 📌 Thread Management & Auto-Sync
-    "createthreads": "📌 Thread Management & Auto-Sync",
+    "create_threads": "📌 Thread Management & Auto-Sync",
     "link_thread": "📌 Thread Management & Auto-Sync",
     "unlink_thread": "📌 Thread Management & Auto-Sync",
-    "force_thread_sync": "📌 Thread Management & Auto-Sync",
-    "set_sync_channel": "📌 Thread Management & Auto-Sync",
-    "remove_sync_channel": "📌 Thread Management & Auto-Sync",
 
     # 🛡️ Division & Hub Management
-    "createdivision": "🛡️ Division & Hub Management",
-    "deletedivision": "🛡️ Division & Hub Management",
-    "createdivision_hub": "🛡️ Division & Hub Management",
-    "deletedivision_hub": "🛡️ Division & Hub Management",
+    "create_division": "🛡️ Division & Hub Management",
+    "delete_division": "🛡️ Division & Hub Management",
+    "create_casual_game": "🛡️ Division & Hub Management",
+    "create_division_hub": "🛡️ Division & Hub Management",
+    "promote_to_division_hub": "🛡️ Division & Hub Management",
+    "edit_hub_game": "🛡️ Division & Hub Management",
+    "delete_division_hub": "🛡️ Division & Hub Management",
+    "list_hub_divisions": "🛡️ Division & Hub Management",
     "set_hub_defaults": "🛡️ Division & Hub Management",
     "set_hub_dashboard_channel": "🛡️ Division & Hub Management",
+    "set_role_sync_log_channel": "🛡️ Division & Hub Management",
+    "add_legacy_division": "🛡️ Division & Hub Management",
+    "list_legacy_divisions": "🛡️ Division & Hub Management",
+    "send_app_panel": "🛡️ Division & Hub Management",
 }
 
-# Default Cog -> Category mapping if a command isn't explicitly overridden above
+# Default Cog -> Category mapping fallback
 COG_CATEGORY_MAP = {
     "ModalDivisionManager": "🛡️ Division & Hub Management",
+    "DivisionManager": "🛡️ Division & Hub Management",
+    "DivisionRoleSync": "🛡️ Division & Hub Management",
+    "ApplicationManager": "🛡️ Division & Hub Management",
+    "ThreadCreator": "📌 Thread Management & Auto-Sync",
     "ThreadSync": "📌 Thread Management & Auto-Sync",
     "ThreadKeeper": "📌 Thread Management & Auto-Sync",
     "RoleManager": "🎭 Role Management",
+    "RoleCreator": "🎭 Role Management",
+    "CategoryRoleSync": "🎭 Role Management",
+    "ReactForRoles": "🎭 Role Management",
+    "AdminUtils": "🛠️ General & Server Setup",
+    "BotTrap": "🛠️ General & Server Setup",
     "ServerStats": "🛠️ General & Server Setup",
     "CommandList": "🛠️ General & Server Setup",
-    "AdminUtils": "🛠️ General & Server Setup",
-    "Utility": "🛠️ General & Server Setup",
+    "CommandLogger": "🛠️ General & Server Setup",
 }
 
 # Fixed order for displaying embed categories
