@@ -60,7 +60,7 @@ class AdminUtils(commands.Cog):
             
         except subprocess.CalledProcessError as e:
             logger.error(f"[Update] Git Pull Failed: {e.stderr}")
-            await interaction.edit_original_response(content=f"❌ **Git Pull Failed:**\n```sh\n{e.stderr}\n```"
+            await interaction.edit_original_response(content=f"❌ **Git Pull Failed:**\n```sh\n{e.stderr}\n```")
     
     # -------------------------------------------------------------------------
     # 1. BULK NICKNAME RENAMER
