@@ -296,9 +296,12 @@ class ThreadKeeper(commands.Cog):
     # -------------------------------------------------------------------------
     # 5. TESTING COMMAND
     # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # 5. TESTING COMMAND
+    # -------------------------------------------------------------------------
     @app_commands.command(
         name="test_thread_bump",
-        description="Force a silent visibility bump in a specific thread to test Discord UI behavior."
+        description="Force a silent visibility bump and enforce 1-week inactivity on a thread."
     )
     @app_commands.checks.has_permissions(manage_threads=True)
     async def test_thread_bump(self, interaction: discord.Interaction, target_thread: discord.Thread):
@@ -309,17 +312,25 @@ class ThreadKeeper(commands.Cog):
             return
 
         try:
+            # 1. Enforce the 1-week inactivity setting
+            if target_thread.auto_archive_duration != 10080:
+                await target_thread.edit(
+                    auto_archive_duration=10080, 
+                    reason="ThreadKeeper: Manual test enforcing 1-week limit"
+                )
+                
+            # 2. Execute the silent UI bump
             msg = await target_thread.send("♻️ *Automated visibility bump test...*", silent=True)
             await msg.delete()
+            
             await interaction.followup.send(
-                f"✅ **Bump Sent!** Check your sidebar to see if {target_thread.mention} moved or became visible.", 
+                f"✅ **Success!** {target_thread.mention} was bumped and locked to **1-Week** inactivity.", 
                 ephemeral=True
             )
         except discord.Forbidden:
-            await interaction.followup.send("❌ Missing permissions to send messages in that thread.", ephemeral=True)
+            await interaction.followup.send("❌ Missing permissions to edit or send messages in that thread.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ Error bumping thread: {e}", ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ThreadKeeper(bot))
