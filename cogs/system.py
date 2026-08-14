@@ -79,4 +79,64 @@ class System(commands.Cog):
         except subprocess.CalledProcessError as e:
             logger.error(f"[Update] Git Pull Failed: {e.stderr}")
             await interaction.edit_original_response(
-                content=f"❌ **Git Process Failed:**\n```sh\n{e.stderr}\n
+                content=f"❌ **Git Process Failed:**\n```sh\n{e.stderr}\n```"
+            )
+
+    @update_bot.error
+    async def update_bot_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You do not have permission to run this command."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+
+    # -------------------------------------------------------------------------
+    # 2. VERSION CHECK COMMAND
+    # -------------------------------------------------------------------------
+    @app_commands.command(
+        name="version",
+        description="Check the currently running bot version and its sync status with GitHub."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def check_version(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Ensure git directory is safe
+            subprocess.run(["git", "config", "--global", "--add", "safe.directory", "/app"], check=True)
+            
+            # Fetch latest from remote to ensure we know if we are behind
+            subprocess.run(["git", "fetch"], check=True)
+            
+            # Get Hashes
+            local_hash = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
+            remote_hash = subprocess.check_output(["git", "rev-parse", "--short", "origin/main"], text=True).strip()
+            
+            # Get latest commit details
+            commit_msg = subprocess.check_output(["git", "log", "-1", "--pretty=%s"], text=True).strip()
+            commit_time = subprocess.check_output(["git", "log", "-1", "--pretty=%cd", "--date=relative"], text=True).strip()
+
+            is_synced = local_hash == remote_hash
+            sync_status = "✅ **In Sync**" if is_synced else "⚠️ **Out of Sync** (Run `/update_bot` to sync)"
+
+            embed = discord.Embed(
+                title="🤖 Bot Version & Revision", 
+                color=discord.Color.green() if is_synced else discord.Color.orange()
+            )
+            embed.add_field(name="Current Version", value=f"`{local_hash}`", inline=True)
+            embed.add_field(name="GitHub Version", value=f"`{remote_hash}`", inline=True)
+            embed.add_field(name="Sync Status", value=sync_status, inline=False)
+            embed.add_field(name="Latest Commit", value=f"`{commit_msg}`\n*{commit_time}*", inline=False)
+            
+            await interaction.followup.send(embed=embed)
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"[Version] Failed to read git history: {e}")
+            await interaction.followup.send(
+                "❌ **Failed to retrieve version information.**", 
+                ephemeral=True
+            )
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(System(bot))
