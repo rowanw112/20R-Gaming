@@ -216,11 +216,12 @@ class ThreadKeeper(commands.Cog):
     # -------------------------------------------------------------------------
     @tasks.loop(hours=12)
     async def bump_inactive_threads(self):
-        """Sends and instantly deletes a silent message to physically bump UI visibility for mapped threads."""
+        """Maintains thread visibility by enforcing 1-week auto-archive and bumping just before expiration."""
         await self.bot.wait_until_ready()
         
         now = discord.utils.utcnow()
-        bump_threshold = now - timedelta(hours=24) # Thread is considered visually inactive after 24 hours
+        # 7 days is Discord's max. We bump at 6.5 days to ensure we beat the auto-hide timer safely.
+        bump_threshold = now - timedelta(days=6, hours=12)
 
         mappings = load_thread_mappings()
         mapped_role_thread_ids = {
@@ -246,7 +247,20 @@ class ThreadKeeper(commands.Cog):
             # Skip locked or specifically exempt threads
             if self.is_exempt_from_unarchive(thread):
                 continue
+
+            # 1. ENFORCE 1-WEEK "HIDE AFTER INACTIVITY" (10080 minutes)
+            # This ensures any automatically created threads are stretched to the max UI lifespan
+            if thread.auto_archive_duration != 10080:
+                try:
+                    await thread.edit(
+                        auto_archive_duration=10080, 
+                        reason="ThreadKeeper: Enforcing 1-week visibility limit"
+                    )
+                    logger.info(f"⚙️ Updated '{thread.name}' Hide After Inactivity to 1 Week.")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
             
+            # 2. CHECK ACTIVITY FOR 1-WEEK BUMP
             # Check last actual Discord message time
             last_msg_time = None
             if thread.last_message_id:
@@ -256,7 +270,7 @@ class ThreadKeeper(commands.Cog):
             last_bump_timestamp = configs["global_last_bumps"].get(str(thread.id))
             last_bump_time = datetime.fromtimestamp(last_bump_timestamp, timezone.utc) if last_bump_timestamp else None
             
-            # We only bump if BOTH the last real message AND the last internal bump were > 24 hours ago
+            # We ONLY bump if BOTH the last real message AND the last internal bump were > 6.5 days ago
             needs_bump_for_msg = not last_msg_time or last_msg_time < bump_threshold
             needs_bump_for_record = not last_bump_time or last_bump_time < bump_threshold
             
@@ -270,7 +284,7 @@ class ThreadKeeper(commands.Cog):
                     configs["global_last_bumps"][str(thread.id)] = now.timestamp()
                     bumps_made = True
                     
-                    logger.info(f"♻️ Bumped inactive mapped thread to maintain UI visibility: {thread.name}")
+                    logger.info(f"♻️ Bumped inactive mapped thread to maintain 1-week UI visibility: {thread.name}")
                     await asyncio.sleep(1.5) # Rate limit safety
                 except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                     pass
@@ -278,10 +292,6 @@ class ThreadKeeper(commands.Cog):
         # Save config only if we actually performed bumps
         if bumps_made:
             save_config(configs)
-
-    @bump_inactive_threads.before_loop
-    async def before_bump(self):
-        await self.bot.wait_until_ready()
 
     # -------------------------------------------------------------------------
     # 5. TESTING COMMAND
