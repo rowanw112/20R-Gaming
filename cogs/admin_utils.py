@@ -47,15 +47,20 @@ class AdminUtils(commands.Cog):
         await interaction.response.send_message("⏳ Pulling latest code and rebooting...", ephemeral=True)
         
         try:
-            # Run git pull
-            subprocess.run(["git", "pull"], check=True, capture_output=True, text=True)
+            # 1. Tell Git this directory is safe (Bypasses the "dubious ownership" LXC/Docker error)
+            subprocess.run(["git", "config", "--global", "--add", "safe.directory", "/app"], check=True)
             
-            # Exit the script. Docker will automatically restart it.
-            logger.info("Bot is shutting down for a Docker restart/update.")
+            # 2. Run git pull to grab your latest code
+            pull_process = subprocess.run(["git", "pull"], check=True, capture_output=True, text=True)
+            logger.info(f"[Update] Git Pull Success: {pull_process.stdout}")
+            
+            # 3. Exit the script. Docker's "restart: unless-stopped" policy will instantly reboot it.
+            logger.info("[Update] Shutting down for Docker auto-reboot...")
             sys.exit(0)
             
         except subprocess.CalledProcessError as e:
-            await interaction.edit_original_response(content=f"❌ **Git Pull Failed:**\n```\n{e.stderr}\n```")
+            logger.error(f"[Update] Git Pull Failed: {e.stderr}")
+            await interaction.edit_original_response(content=f"❌ **Git Pull Failed:**\n```sh\n{e.stderr}\n```"
     
     # -------------------------------------------------------------------------
     # 1. BULK NICKNAME RENAMER
