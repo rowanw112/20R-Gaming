@@ -37,30 +37,6 @@ class AdminUtils(commands.Cog):
             if current.lower() in f.lower()
         ][:25]  # Discord limits autocomplete options to 25
 
-
-    @app_commands.command(
-        name="update_bot",
-        description="Pulls the latest code from GitHub and restarts the bot."
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def update_bot(self, interaction: discord.Interaction):
-        await interaction.response.send_message("⏳ Pulling latest code and rebooting...", ephemeral=True)
-        
-        try:
-            # 1. Tell Git this directory is safe (Bypasses the "dubious ownership" LXC/Docker error)
-            subprocess.run(["git", "config", "--global", "--add", "safe.directory", "/app"], check=True)
-            
-            # 2. Run git pull to grab your latest code
-            pull_process = subprocess.run(["git", "pull"], check=True, capture_output=True, text=True)
-            logger.info(f"[Update] Git Pull Success: {pull_process.stdout}")
-            
-            # 3. Exit the script. Docker's "restart: unless-stopped" policy will instantly reboot it.
-            logger.info("[Update] Shutting down for Docker auto-reboot...")
-            sys.exit(0)
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"[Update] Git Pull Failed: {e.stderr}")
-            await interaction.edit_original_response(content=f"❌ **Git Pull Failed:**\n```sh\n{e.stderr}\n```")
     
     # -------------------------------------------------------------------------
     # 1. BULK NICKNAME RENAMER

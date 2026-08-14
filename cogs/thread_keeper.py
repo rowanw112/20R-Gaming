@@ -7,6 +7,7 @@ from datetime import timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from datetime import datetime, timezone
 
 from core.database import load_thread_mappings
 
@@ -253,7 +254,7 @@ class ThreadKeeper(commands.Cog):
                 
             # Check our internal bump ledger
             last_bump_timestamp = configs["global_last_bumps"].get(str(thread.id))
-            last_bump_time = discord.utils.utcfromtimestamp(last_bump_timestamp) if last_bump_timestamp else None
+            last_bump_time = datetime.fromtimestamp(last_bump_timestamp, timezone.utc) if last_bump_timestamp else None
             
             # We only bump if BOTH the last real message AND the last internal bump were > 24 hours ago
             needs_bump_for_msg = not last_msg_time or last_msg_time < bump_threshold
