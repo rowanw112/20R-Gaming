@@ -1,0 +1,18 @@
+{
+    "1530922810275528774": {
+        "hub_channel_ids": [
+            1537547021379178618,
+            1537550535765524540
+        ],
+        "channel_index": 4,
+        "mute_restricted_role_id": 1537550370967003147,
+        "channel_name_format": "#{index}-{username}'s-Channel",
+        "active_channels": {
+            "1537612294597382176": {
+                "index": 2,
+                "owner_id": 153393533666066432,
+                "control_msg_id": 1537612296736473169
+            }
+        }
+    }
+}
