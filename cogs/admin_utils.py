@@ -4,6 +4,8 @@ import os
 import discord
 from discord import app_commands
 from discord.ext import commands
+import subprocess
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,26 @@ class AdminUtils(commands.Cog):
             if current.lower() in f.lower()
         ][:25]  # Discord limits autocomplete options to 25
 
+
+    @app_commands.command(
+        name="update_bot",
+        description="Pulls the latest code from GitHub and restarts the bot."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def update_bot(self, interaction: discord.Interaction):
+        await interaction.response.send_message("⏳ Pulling latest code and rebooting...", ephemeral=True)
+        
+        try:
+            # Run git pull
+            subprocess.run(["git", "pull"], check=True, capture_output=True, text=True)
+            
+            # Exit the script. Docker will automatically restart it.
+            logger.info("Bot is shutting down for a Docker restart/update.")
+            sys.exit(0)
+            
+        except subprocess.CalledProcessError as e:
+            await interaction.edit_original_response(content=f"❌ **Git Pull Failed:**\n```\n{e.stderr}\n```")
+    
     # -------------------------------------------------------------------------
     # 1. BULK NICKNAME RENAMER
     # -------------------------------------------------------------------------

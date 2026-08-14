@@ -13,6 +13,13 @@ logger = logging.getLogger(__name__)
 CONFIG_FILE = "data/dynamic_voice_config.json"
 RANK_CONFIG_FILE = "data/rank_system_config.json"
 
+# Day 1 Starter Pack. Deliberately using "europe" instead of "rotterdam" so you can trigger the 400 error!
+DEFAULT_REGIONS = [
+    "brazil", "hongkong", "india", "japan", "europe", 
+    "singapore", "south-korea", "southafrica", "sydney", 
+    "us-central", "us-east", "us-south", "us-west"
+]
+
 
 def load_config() -> dict:
     if not os.path.exists(CONFIG_FILE):
@@ -52,6 +59,18 @@ def format_channel_name(template: str, index: int, member: discord.Member) -> st
     clean_name = get_clean_username(member)
     formatted = template.replace("{index}", str(index)).replace("{username}", clean_name)
     return formatted[:100]  # Discord channel name limit is 100 chars
+
+
+def get_region_label(val: str) -> str:
+    """Formats internal region tags into nice readable labels."""
+    labels = {
+        "rotterdam": "Rotterdam (Europe)",
+        "hongkong": "Hong Kong",
+        "south-korea": "South Korea",
+        "southafrica": "South Africa",
+        "europe": "Europe (Test Error)" # Deliberate trap to let you test the auto-updater
+    }
+    return labels.get(val, val.replace("-", " ").title())
 
 
 # -------------------------------------------------------------------------
@@ -177,18 +196,18 @@ class DynamicVoiceControlView(discord.ui.View):
         owner_id, index = await self._get_vc_data(interaction)
         if not owner_id: return
 
+        configs = load_config()
+        guild_cfg = configs.get(str(interaction.guild.id), {})
+        valid_regions = guild_cfg.get("valid_voice_regions", DEFAULT_REGIONS)
+
         options = [
-            discord.SelectOption(label="Automatic", value="auto", description="Best region automatically selected"),
-            discord.SelectOption(label="US East", value="us-east"),
-            discord.SelectOption(label="US Central", value="us-central"),
-            discord.SelectOption(label="US West", value="us-west"),
-            discord.SelectOption(label="US South", value="us-south"),
-            discord.SelectOption(label="Europe", value="europe"),
-            discord.SelectOption(label="Sydney", value="sydney"),
-            discord.SelectOption(label="Brazil", value="brazil"),
-            discord.SelectOption(label="Japan", value="japan"),
-            discord.SelectOption(label="Singapore", value="singapore"),
+            discord.SelectOption(label="Automatic", value="auto", description="Best region automatically selected")
         ]
+
+        # Limit to 24 to leave room for 'Automatic'
+        for region in valid_regions[:24]:
+            options.append(discord.SelectOption(label=get_region_label(region), value=region))
+
         select = discord.ui.Select(placeholder="Select a voice region...", options=options)
 
         async def select_callback(select_interaction: discord.Interaction):
@@ -202,11 +221,33 @@ class DynamicVoiceControlView(discord.ui.View):
                     pass
 
             val = select.values[0]
-            region = None if val == "auto" else val
+            region_val = None if val == "auto" else val
             try:
-                await interaction.channel.edit(rtc_region=region)
-                await select_interaction.edit_original_response(content=f"✅ Voice region successfully set to **{val.title()}**.", view=None)
-            except Exception as e:
+                await interaction.channel.edit(rtc_region=region_val)
+                display_name = "Automatic" if val == "auto" else get_region_label(val)
+                await select_interaction.edit_original_response(content=f"✅ Voice region successfully set to **{display_name}**.", view=None)
+            except discord.HTTPException as e:
+                # Intelligent 400 Error Handler to learn API updates automatically[cite: 12]
+                if e.status == 400 and "rtc_region" in str(e) and "Value must be one of" in str(e):
+                    match = re.search(r"Value must be one of \((.*?)\)", str(e))
+                    if match:
+                        raw_list = match.group(1).replace("'", "").replace(" ", "")
+                        new_regions = raw_list.split(",")
+                        
+                        current_cfg = load_config()
+                        g_cfg = current_cfg.get(str(interaction.guild.id), {})
+                        g_cfg["valid_voice_regions"] = new_regions
+                        current_cfg[str(interaction.guild.id)] = g_cfg
+                        save_config(current_cfg)
+                        
+                        logger.info(f"[DynamicVoice] Extracted and updated valid voice regions from API error: {new_regions}")
+                        await select_interaction.edit_original_response(
+                            content="❌ That region is currently unavailable. The region list has been automatically refreshed behind the scenes—please click the Region button and try again!", 
+                            view=None
+                        )
+                        asyncio.create_task(cleanup())
+                        return
+                        
                 await select_interaction.edit_original_response(content=f"❌ Failed to set region: {e}", view=None)
             
             asyncio.create_task(cleanup())
@@ -236,10 +277,8 @@ class DynamicVoiceControlView(discord.ui.View):
         select = discord.ui.Select(placeholder="Select new channel owner...", options=options)
 
         async def select_callback(select_interaction: discord.Interaction):
-            # Edit the dropdown message so the user knows it's processing, and remove the menu view
             await select_interaction.response.edit_message(content="⏳ Processing transfer...", view=None)
             
-            # 30-Second Auto-Delete Task for Ephemeral Followups
             async def cleanup():
                 await asyncio.sleep(30)
                 try:
@@ -256,7 +295,6 @@ class DynamicVoiceControlView(discord.ui.View):
                 asyncio.create_task(cleanup())
                 return
 
-            # Strip old owner's management permissions
             if old_owner:
                 old_overwrite = channel.overwrites_for(old_owner)
                 old_overwrite.manage_channels = None
@@ -265,7 +303,6 @@ class DynamicVoiceControlView(discord.ui.View):
                 old_overwrite.mute_members = None
                 await channel.set_permissions(old_owner, overwrite=old_overwrite)
 
-            # Grant new owner management permissions
             new_overwrite = channel.overwrites_for(new_owner)
             new_overwrite.view_channel = True
             new_overwrite.connect = True
@@ -280,18 +317,15 @@ class DynamicVoiceControlView(discord.ui.View):
             cfg = configs.get(str(guild.id), {})
             template = cfg.get("channel_name_format", "#{index}-{username}'s-Channel")
 
-            # Smart Rename: Only change if it matches the generated default template for the old owner
             expected_old_name = format_channel_name(template, index, old_owner) if old_owner else ""
             if channel.name == expected_old_name:
                 new_channel_name = format_channel_name(template, index, new_owner)
                 await channel.edit(name=new_channel_name)
 
-            # Save new owner to config
             cfg["active_channels"][str(channel.id)]["owner_id"] = new_owner.id
             configs[str(guild.id)] = cfg
             save_config(configs)
 
-            # Update Control Panel Embed
             embed = interaction.message.embeds[0]
             clean_name = get_clean_username(new_owner)
             embed.title = f"🎙️ {clean_name}'s Channel Controls"
@@ -343,10 +377,8 @@ class DynamicVoiceControlView(discord.ui.View):
         select = discord.ui.Select(placeholder="Select user to Mute/Unmute locally...", options=options)
 
         async def select_callback(select_interaction: discord.Interaction):
-            # Edit the dropdown message so the user knows it's processing, and remove the menu view
             await select_interaction.response.edit_message(content="⏳ Processing mute toggle...", view=None)
 
-            # 30-Second Auto-Delete Task for Ephemeral Followups
             async def cleanup():
                 await asyncio.sleep(30)
                 try:
@@ -362,13 +394,11 @@ class DynamicVoiceControlView(discord.ui.View):
                 asyncio.create_task(cleanup())
                 return
 
-            # Check Staff Protection
             rank_cfg = load_rank_config().get(str(guild.id), {})
             staff_ids = rank_cfg.get("staff_role_ids", [])
             target_role_ids = [r.id for r in target.roles]
             
             if any(r_id in staff_ids for r_id in target_role_ids):
-                # Send DM instead of pinging the text channel
                 try:
                     await target.send(
                         f"⚠️ **Security Notice:** {interaction.user.display_name} attempted to locally mute you in **{channel.name}**, "
@@ -409,7 +439,6 @@ class DynamicVoiceControlView(discord.ui.View):
             await channel.set_permissions(target, overwrite=overwrite)
 
             if not is_muted:
-                # Send polite but direct DM notification
                 try:
                     await target.send(
                         f"🔇 You have been **locally muted** in **{channel.name}** by {interaction.user.display_name}.\n\n"
@@ -419,12 +448,10 @@ class DynamicVoiceControlView(discord.ui.View):
                 except discord.HTTPException:
                     pass
 
-                # Public channel notification
                 await channel.send(
                     f"🔇 {target.mention} has been **locally muted** by {interaction.user.mention} and disconnected to apply the change."
                 )
 
-                # Disconnect the user to force the Discord client to update its voice state permissions
                 if target.voice and target.voice.channel == channel:
                     try:
                         await target.move_to(None, reason="Forcing local mute update")
@@ -433,7 +460,6 @@ class DynamicVoiceControlView(discord.ui.View):
                 
                 await select_interaction.edit_original_response(content=f"✅ Muted {target.mention} locally.")
             else:
-                # Send DM instead of pinging the text channel
                 try:
                     await target.send(
                         f"🔊 You have been **unmuted** in **{channel.name}** by {interaction.user.display_name}. "
@@ -442,12 +468,10 @@ class DynamicVoiceControlView(discord.ui.View):
                 except discord.HTTPException:
                     pass
 
-                # Public channel notification
                 await channel.send(
                     f"🔊 {target.mention} has been **unmuted** by {interaction.user.mention} and disconnected to apply the change."
                 )
 
-                # Disconnect the user to force the Discord client to update its voice state permissions
                 if target.voice and target.voice.channel == channel:
                     try:
                         await target.move_to(None, reason="Forcing local unmute update")
@@ -554,7 +578,6 @@ class DynamicVoice(commands.Cog):
         for ch_id_str in to_delete:
             del active_channels[ch_id_str]
 
-        # 1. NOTIFY IF USER REJOINED A CHANNEL WHILE MUTED
         if after.channel and str(after.channel.id) in active_channels:
             overwrite = after.channel.overwrites_for(member)
             if overwrite.speak is False:
@@ -563,7 +586,6 @@ class DynamicVoice(commands.Cog):
                     f"You can ask the channel owner to unmute you, but it is highly recommended that you join a different public voice channel."
                 )
 
-        # 2. USER JOINED A VOICE HUB (CREATE DYNAMIC CHANNEL)
         if after.channel and after.channel.id in hub_ids:
             hub_channel = after.channel
 
@@ -598,7 +620,6 @@ class DynamicVoice(commands.Cog):
                     reason=f"Dynamic Voice Channel created by {member.display_name}",
                 )
 
-                # Post control embed
                 embed = discord.Embed(
                     title=f"🎙️ {clean_name}'s Channel Controls",
                     description=(
@@ -624,7 +645,6 @@ class DynamicVoice(commands.Cog):
             except (discord.Forbidden, discord.HTTPException) as e:
                 logger.error(f"[DynamicVoice] Failed to create voice channel for {member.display_name}: {e}")
 
-        # 3. USER LEFT A DYNAMIC VOICE CHANNEL (AUTO-TEARDOWN OR TRANSFER)
         if before.channel and str(before.channel.id) in active_channels:
             left_channel = before.channel
             channel_data = active_channels[str(left_channel.id)]
@@ -641,15 +661,12 @@ class DynamicVoice(commands.Cog):
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
                     logger.error(f"[DynamicVoice] Error deleting empty voice channel: {e}")
                     
-            # If the person who left was the owner, but people are still inside
             elif member.id == channel_data.get("owner_id"):
                 eligible_members = [m for m in left_channel.members if not m.bot]
                 if eligible_members:
-                    # Pick the user with the highest top_role position
                     new_owner = max(eligible_members, key=lambda m: m.top_role.position)
                     
                     try:
-                        # Strip old owner's permissions
                         old_overwrite = left_channel.overwrites_for(member)
                         old_overwrite.manage_channels = None
                         old_overwrite.manage_permissions = None
@@ -657,7 +674,6 @@ class DynamicVoice(commands.Cog):
                         old_overwrite.mute_members = None
                         await left_channel.set_permissions(member, overwrite=old_overwrite)
 
-                        # Grant new owner's permissions
                         new_overwrite = left_channel.overwrites_for(new_owner)
                         new_overwrite.view_channel = True
                         new_overwrite.connect = True
@@ -668,20 +684,17 @@ class DynamicVoice(commands.Cog):
                         new_overwrite.mute_members = True
                         await left_channel.set_permissions(new_owner, overwrite=new_overwrite)
 
-                        # Update config
                         active_channels[str(left_channel.id)]["owner_id"] = new_owner.id
                         cfg["active_channels"] = active_channels
                         configs[str(guild.id)] = cfg
                         save_config(configs)
 
-                        # Rename channel (only if it still matched the old owner's default template)
                         index = channel_data.get("index")
                         expected_old_name = format_channel_name(name_template, index, member)
                         if left_channel.name == expected_old_name:
                             new_channel_name = format_channel_name(name_template, index, new_owner)
                             await left_channel.edit(name=new_channel_name)
 
-                        # Fetch and update the original control panel embed
                         control_msg_id = channel_data.get("control_msg_id")
                         if control_msg_id:
                             try:
@@ -702,7 +715,6 @@ class DynamicVoice(commands.Cog):
                             except discord.HTTPException as e:
                                 logger.error(f"[DynamicVoice] Failed to update control panel on auto-transfer: {e}")
 
-                        # Send announcement to the channel
                         await left_channel.send(
                             f"👑 **Ownership Auto-Transferred!**\n"
                             f"{member.display_name} left the channel, so ownership has been automatically transferred to the highest-ranked member: {new_owner.mention}."
@@ -711,9 +723,6 @@ class DynamicVoice(commands.Cog):
                         logger.error(f"[DynamicVoice] Failed to auto-transfer ownership: {e}")
 
 
-    # -------------------------------------------------------------------------
-    # COMMANDS
-    # -------------------------------------------------------------------------
     @app_commands.command(
         name="setup_voice_hub",
         description="Creates or registers a Join-to-Create Voice Hub channel.",
