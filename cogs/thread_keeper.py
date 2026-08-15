@@ -13,26 +13,30 @@ from core.database import load_thread_mappings
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "data/thread_keeper_config.json"
-
 # Pattern to match threads starting with numbers (e.g. "1234-ticket-name" or "0012 - support")
 RE_TICKET_PREFIX = re.compile(r"^\d+")
 
 
-def load_config() -> dict:
-    if not os.path.exists(CONFIG_FILE):
-        return {}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+def get_config_path(guild_id: int) -> str:
+    path = f"data/{guild_id}"
+    os.makedirs(path, exist_ok=True)
+    return f"{path}/thread_keeper_config.json"
+
+
+def load_config(guild_id: int) -> dict:
+    filepath = get_config_path(guild_id)
+    if os.path.exists(filepath):
         try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            pass
+    return {}
 
 
-def save_config(data: dict):
-    if "/" in CONFIG_FILE:
-        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+def save_config(guild_id: int, data: dict):
+    filepath = get_config_path(guild_id)
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 
@@ -85,7 +89,7 @@ class ThreadKeeper(commands.Cog):
 
     async def _unarchive_guild_threads(self, guild: discord.Guild, context_reason: str):
         """Sweeps and unarchives valid inactive threads across text channels in the guild."""
-        mappings = load_thread_mappings()
+        mappings = load_thread_mappings(guild.id)
         
         # Safe extraction ensuring item is a dictionary before calling .get()
         mapped_role_thread_ids = {
@@ -176,7 +180,7 @@ class ThreadKeeper(commands.Cog):
                     f"🔓 Instantly unarchived thread: {after.name} ({after.id})"
                 )
 
-                mappings = load_thread_mappings()
+                mappings = load_thread_mappings(after.guild.id)
                 mapped_role_thread_ids = {
                     item.get("thread_id")
                     for item in mappings
@@ -218,84 +222,85 @@ class ThreadKeeper(commands.Cog):
     async def bump_inactive_threads(self):
         """Maintains thread visibility by enforcing 1-week auto-archive and bumping just before expiration."""
         await self.bot.wait_until_ready()
-        
         now = discord.utils.utcnow()
         # 7 days is Discord's max. We bump at 6.5 days to ensure we beat the auto-hide timer safely.
         bump_threshold = now - timedelta(days=6, hours=12)
 
-        mappings = load_thread_mappings()
-        mapped_role_thread_ids = {
-            item.get("thread_id")
-            for item in mappings
-            if isinstance(item, dict) and item.get("thread_id")
-        }
+        for guild in self.bot.guilds:
+            mappings = load_thread_mappings(guild.id)
+            mapped_role_thread_ids = {
+                item.get("thread_id")
+                for item in mappings
+                if isinstance(item, dict) and item.get("thread_id")
+            }
 
-        # Load persistent bump ledger
-        configs = load_config()
-        if "global_last_bumps" not in configs:
-            configs["global_last_bumps"] = {}
-            
-        bumps_made = False
-
-        for thread_id in mapped_role_thread_ids:
-            # Safely fetch the thread globally across the bot's cache
-            thread = self.bot.get_channel(thread_id)
-            
-            if not isinstance(thread, discord.Thread):
-                continue
+            # Load persistent bump ledger
+            configs = load_config(guild.id)
+            if "global_last_bumps" not in configs:
+                configs["global_last_bumps"] = {}
                 
-            # Skip locked or specifically exempt threads
-            if self.is_exempt_from_unarchive(thread):
-                continue
+            bumps_made = False
 
-            # 1. ENFORCE 1-WEEK "HIDE AFTER INACTIVITY" (10080 minutes)
-            # This ensures any automatically created threads are stretched to the max UI lifespan
-            if thread.auto_archive_duration != 10080:
-                try:
-                    await thread.edit(
-                        auto_archive_duration=10080, 
-                        reason="ThreadKeeper: Enforcing 1-week visibility limit"
-                    )
-                    logger.info(f"⚙️ Updated '{thread.name}' Hide After Inactivity to 1 Week.")
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
-            
-            # 2. CHECK ACTIVITY FOR 1-WEEK BUMP
-            # Check last actual Discord message time
-            last_msg_time = None
-            if thread.last_message_id:
-                last_msg_time = discord.utils.snowflake_time(thread.last_message_id)
+            for thread_id in mapped_role_thread_ids:
+                thread = guild.get_thread(thread_id)
+                if not thread:
+                    try:
+                        thread = await guild.fetch_channel(thread_id)
+                    except (discord.NotFound, discord.HTTPException, discord.ClientException):
+                        continue
+                        
+                if not isinstance(thread, discord.Thread):
+                    continue
+                    
+                # Skip locked or specifically exempt threads
+                if self.is_exempt_from_unarchive(thread):
+                    continue
+
+                # 1. ENFORCE 1-WEEK "HIDE AFTER INACTIVITY" (10080 minutes)
+                # This ensures any automatically created threads are stretched to the max UI lifespan
+                if thread.auto_archive_duration != 10080:
+                    try:
+                        await thread.edit(
+                            auto_archive_duration=10080, 
+                            reason="ThreadKeeper: Enforcing 1-week visibility limit"
+                        )
+                        logger.info(f"⚙️ Updated '{thread.name}' Hide After Inactivity to 1 Week.")
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
                 
-            # Check our internal bump ledger
-            last_bump_timestamp = configs["global_last_bumps"].get(str(thread.id))
-            last_bump_time = datetime.fromtimestamp(last_bump_timestamp, timezone.utc) if last_bump_timestamp else None
-            
-            # We ONLY bump if BOTH the last real message AND the last internal bump were > 6.5 days ago
-            needs_bump_for_msg = not last_msg_time or last_msg_time < bump_threshold
-            needs_bump_for_record = not last_bump_time or last_bump_time < bump_threshold
-            
-            if needs_bump_for_msg and needs_bump_for_record:
-                try:
-                    # Send a silent message so it doesn't trigger push notifications, then delete it
-                    msg = await thread.send("♻️ *Automated visibility bump...*", silent=True)
-                    await msg.delete()
+                # 2. CHECK ACTIVITY FOR 1-WEEK BUMP
+                # Check last actual Discord message time
+                last_msg_time = None
+                if thread.last_message_id:
+                    last_msg_time = discord.utils.snowflake_time(thread.last_message_id)
                     
-                    # Log the bump in our persistent tracker
-                    configs["global_last_bumps"][str(thread.id)] = now.timestamp()
-                    bumps_made = True
-                    
-                    logger.info(f"♻️ Bumped inactive mapped thread to maintain 1-week UI visibility: {thread.name}")
-                    await asyncio.sleep(1.5) # Rate limit safety
-                except (discord.Forbidden, discord.HTTPException, discord.NotFound):
-                    pass
+                # Check our internal bump ledger
+                last_bump_timestamp = configs["global_last_bumps"].get(str(thread.id))
+                last_bump_time = datetime.fromtimestamp(last_bump_timestamp, timezone.utc) if last_bump_timestamp else None
+                
+                # We ONLY bump if BOTH the last real message AND the last internal bump were > 6.5 days ago
+                needs_bump_for_msg = not last_msg_time or last_msg_time < bump_threshold
+                needs_bump_for_record = not last_bump_time or last_bump_time < bump_threshold
+                
+                if needs_bump_for_msg and needs_bump_for_record:
+                    try:
+                        # Send a silent message so it doesn't trigger push notifications, then delete it
+                        msg = await thread.send("♻️ *Automated visibility bump...*", silent=True)
+                        await msg.delete()
+                        
+                        # Log the bump in our persistent tracker
+                        configs["global_last_bumps"][str(thread.id)] = now.timestamp()
+                        bumps_made = True
+                        
+                        logger.info(f"♻️ Bumped inactive mapped thread to maintain 1-week UI visibility: {thread.name}")
+                        await asyncio.sleep(1.5) # Rate limit safety
+                    except (discord.Forbidden, discord.HTTPException, discord.NotFound):
+                        pass
 
-        # Save config only if we actually performed bumps
-        if bumps_made:
-            save_config(configs)
+            # Save config only if we actually performed bumps for this guild
+            if bumps_made:
+                save_config(guild.id, configs)
 
-    # -------------------------------------------------------------------------
-    # 5. TESTING COMMAND
-    # -------------------------------------------------------------------------
     # -------------------------------------------------------------------------
     # 5. TESTING COMMAND
     # -------------------------------------------------------------------------

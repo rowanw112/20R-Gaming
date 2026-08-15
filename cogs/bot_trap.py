@@ -7,32 +7,36 @@ from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
-DATA_FILE = os.path.join("data", "bait_stats.json")
+
+def get_config_path(guild_id: int) -> str:
+    path = f"data/{guild_id}"
+    os.makedirs(path, exist_ok=True)
+    return f"{path}/bait_stats.json"
 
 
-def load_data() -> dict:
-    if os.path.exists(DATA_FILE):
+def load_data(guild_id: int) -> dict:
+    filepath = get_config_path(guild_id)
+    if os.path.exists(filepath):
         try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
+            with open(filepath, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            logger.error(f"Failed to load bait stats file: {e}")
+            logger.error(f"Failed to load bait stats file for {guild_id}: {e}")
     return {}
 
 
-def save_data(data: dict):
-    os.makedirs("data", exist_ok=True)
+def save_data(guild_id: int, data: dict):
+    filepath = get_config_path(guild_id)
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
     except Exception as e:
-        logger.error(f"Failed to save bait stats file: {e}")
+        logger.error(f"Failed to save bait stats file for {guild_id}: {e}")
 
 
 class BotTrap(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.data = load_data()
 
     def build_warning_embed(self, ban_count: int) -> discord.Embed:
         embed = discord.Embed(
@@ -75,20 +79,18 @@ class BotTrap(commands.Cog):
                 reason=f"Bot Trap setup requested by {interaction.user}",
             )
 
-        guild_id_str = str(guild.id)
-        current_bans = self.data.get(guild_id_str, {}).get("ban_count", 0)
+        guild_data = load_data(guild.id)
+        current_bans = guild_data.get("ban_count", 0)
 
         # Post the initial warning embed
         embed = self.build_warning_embed(current_bans)
         message = await target_channel.send(embed=embed)
 
         # Save config
-        self.data[guild_id_str] = {
-            "channel_id": target_channel.id,
-            "message_id": message.id,
-            "ban_count": current_bans,
-        }
-        save_data(self.data)
+        guild_data["channel_id"] = target_channel.id
+        guild_data["message_id"] = message.id
+        guild_data["ban_count"] = current_bans
+        save_data(guild.id, guild_data)
 
         await interaction.followup.send(
             f"✅ **Bot Trap Setup Complete!**\n"
@@ -107,9 +109,8 @@ class BotTrap(commands.Cog):
     async def update_bait_embed(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        guild_id_str = str(guild.id)
 
-        guild_data = self.data.get(guild_id_str)
+        guild_data = load_data(guild.id)
         if not guild_data or "channel_id" not in guild_data:
             await interaction.followup.send(
                 "❌ No bot bait channel configured for this server. Run `/setupbait` first."
@@ -133,8 +134,7 @@ class BotTrap(commands.Cog):
             # If the old message was accidentally deleted, post a new one
             new_msg = await channel.send(embed=new_embed)
             guild_data["message_id"] = new_msg.id
-            self.data[guild_id_str] = guild_data
-            save_data(self.data)
+            save_data(guild.id, guild_data)
             await interaction.followup.send(
                 "⚠️ Old embed message was missing. **New embed message created and saved!**"
             )
@@ -151,8 +151,7 @@ class BotTrap(commands.Cog):
         if message.author.bot or not message.guild:
             return
 
-        guild_id_str = str(message.guild.id)
-        guild_data = self.data.get(guild_id_str)
+        guild_data = load_data(message.guild.id)
 
         if not guild_data or message.channel.id != guild_data.get("channel_id"):
             return
@@ -189,8 +188,7 @@ class BotTrap(commands.Cog):
 
         # Increment ban counter & update stored state
         guild_data["ban_count"] = guild_data.get("ban_count", 0) + 1
-        self.data[guild_id_str] = guild_data
-        save_data(self.data)
+        save_data(message.guild.id, guild_data)
 
         # Update the live warning embed footer
         try:

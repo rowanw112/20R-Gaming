@@ -7,24 +7,29 @@ from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "data/rank_system_config.json"
 LOGO_PATH = "data/images/20r_logo.png"
 
 
-def load_config() -> dict:
-    if not os.path.exists(CONFIG_FILE):
+def get_config_path(guild_id: int) -> str:
+    path = f"data/{guild_id}"
+    os.makedirs(path, exist_ok=True)
+    return f"{path}/rank_system_config.json"
+
+
+def load_config(guild_id: int) -> dict:
+    filepath = get_config_path(guild_id)
+    if not os.path.exists(filepath):
         return {}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         try:
             return json.load(f)
         except json.JSONDecodeError:
             return {}
 
 
-def save_config(data: dict):
-    if "/" in CONFIG_FILE:
-        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+def save_config(guild_id: int, data: dict):
+    filepath = get_config_path(guild_id)
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 
@@ -45,8 +50,7 @@ class RankDisplay(commands.Cog):
 
     async def update_public_display(self, guild: discord.Guild):
         """Generates and maintains the public member-facing Rank & Staff hierarchy embed."""
-        configs = load_config()
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_config(guild.id)
 
         channel_id = cfg.get("public_display_channel_id")
         message_id = cfg.get("public_display_message_id")
@@ -58,7 +62,7 @@ class RankDisplay(commands.Cog):
         if not channel:
             try:
                 channel = await guild.fetch_channel(channel_id)
-            except (discord.NotFound, discord.HTTPException):
+            except (discord.NotFound, discord.HTTPException, discord.ClientException):
                 return
 
         if not isinstance(channel, discord.TextChannel):
@@ -210,8 +214,7 @@ class RankDisplay(commands.Cog):
 
             cfg["public_display_channel_id"] = channel.id
             cfg["public_display_message_id"] = posted_msg.id
-            configs[str(guild.id)] = cfg
-            save_config(configs)
+            save_config(guild.id, cfg)
 
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.error(f"❌ Error posting Public Rank Display in #{channel.name}: {e}")
@@ -238,13 +241,11 @@ class RankDisplay(commands.Cog):
             )
             return
 
-        configs = load_config()
-        guild_cfg = configs.get(str(interaction.guild_id), {})
+        cfg = load_config(interaction.guild_id)
 
-        guild_cfg["public_display_channel_id"] = target_channel.id
-        guild_cfg["public_display_message_id"] = None
-        configs[str(interaction.guild_id)] = guild_cfg
-        save_config(configs)
+        cfg["public_display_channel_id"] = target_channel.id
+        cfg["public_display_message_id"] = None
+        save_config(interaction.guild_id, cfg)
 
         await self.update_public_display(interaction.guild)
 

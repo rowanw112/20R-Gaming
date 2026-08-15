@@ -14,11 +14,17 @@ from core.database import (
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "data/rank_system_config.json"
 LOGO_PATH = "data/images/20r_logo.png"
 
 
-def load_json(filepath: str) -> dict:
+def get_config_path(guild_id: int) -> str:
+    path = f"data/{guild_id}"
+    os.makedirs(path, exist_ok=True)
+    return f"{path}/rank_system_config.json"
+
+
+def load_json(guild_id: int) -> dict:
+    filepath = get_config_path(guild_id)
     if not os.path.exists(filepath):
         return {}
     with open(filepath, "r", encoding="utf-8") as f:
@@ -28,9 +34,8 @@ def load_json(filepath: str) -> dict:
             return {}
 
 
-def save_json(filepath: str, data: dict):
-    if "/" in filepath:
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+def save_json(guild_id: int, data: dict):
+    filepath = get_config_path(guild_id)
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
@@ -105,8 +110,7 @@ class ReactForRoles(commands.Cog):
 
     async def update_react_embeds(self, guild: discord.Guild):
         """Scans hub divisions, legacy divisions, and casual games to update button embeds."""
-        configs = load_json(CONFIG_FILE)
-        guild_cfg = configs.get(str(guild.id), {})
+        guild_cfg = load_json(guild.id)
         channel_id = guild_cfg.get("react_roles_channel_id")
 
         if not channel_id:
@@ -116,15 +120,15 @@ class ReactForRoles(commands.Cog):
         if not channel:
             try:
                 channel = await guild.fetch_channel(channel_id)
-            except (discord.NotFound, discord.HTTPException):
+            except (discord.NotFound, discord.HTTPException, discord.ClientException):
                 return
 
         if not isinstance(channel, discord.TextChannel):
             return
 
-        division_records = load_division_records()
-        legacy_records = load_legacy_division_records()
-        casual_records = load_casual_records()
+        division_records = load_division_records(guild.id)
+        legacy_records = load_legacy_division_records(guild.id)
+        casual_records = load_casual_records(guild.id)
 
         divisions_list = []
         casuals_list = []
@@ -207,8 +211,7 @@ class ReactForRoles(commands.Cog):
 
         guild_cfg["react_div_message_ids"] = new_div_msg_ids
         guild_cfg["react_casual_message_ids"] = new_casual_msg_ids
-        configs[str(guild.id)] = guild_cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(guild.id, guild_cfg)
 
     async def _deploy_section_embeds(
         self,
@@ -323,14 +326,12 @@ class ReactForRoles(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         target_channel = channel or interaction.channel
 
-        configs = load_json(CONFIG_FILE)
-        guild_cfg = configs.get(str(interaction.guild_id), {})
+        guild_cfg = load_json(interaction.guild_id)
 
         guild_cfg["react_roles_channel_id"] = target_channel.id
         guild_cfg["react_div_message_ids"] = []
         guild_cfg["react_casual_message_ids"] = []
-        configs[str(interaction.guild_id)] = guild_cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(interaction.guild_id, guild_cfg)
 
         await self.update_react_embeds(interaction.guild)
 

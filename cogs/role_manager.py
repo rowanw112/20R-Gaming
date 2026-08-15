@@ -9,10 +9,15 @@ from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "data/rank_system_config.json"
+
+def get_config_path(guild_id: int) -> str:
+    path = f"data/{guild_id}"
+    os.makedirs(path, exist_ok=True)
+    return f"{path}/rank_system_config.json"
 
 
-def load_json(filepath: str) -> dict:
+def load_json(guild_id: int) -> dict:
+    filepath = get_config_path(guild_id)
     if not os.path.exists(filepath):
         return {}
     with open(filepath, "r", encoding="utf-8") as f:
@@ -22,9 +27,8 @@ def load_json(filepath: str) -> dict:
             return {}
 
 
-def save_json(filepath: str, data: dict):
-    if "/" in filepath:
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+def save_json(guild_id: int, data: dict):
+    filepath = get_config_path(guild_id)
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
@@ -75,11 +79,9 @@ class StaffHierarchyOrderSelect(discord.ui.Select):
 
         ordered_ids = [int(v) for v in self.values]
         
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_json(guild.id)
         cfg["staff_role_ids"] = ordered_ids
-        configs[str(guild.id)] = cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(guild.id, cfg)
 
         cog = interaction.client.get_cog("RoleManager")
         if cog:
@@ -123,11 +125,9 @@ class RankHierarchyOrderSelect(discord.ui.Select):
 
         ordered_ids = [int(v) for v in self.values]
         
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_json(guild.id)
         cfg["rank_role_ids"] = ordered_ids
-        configs[str(guild.id)] = cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(guild.id, cfg)
 
         cog = interaction.client.get_cog("RoleManager")
         if cog:
@@ -171,13 +171,10 @@ class BasicHierarchyOrderSelect(discord.ui.Select):
 
         ordered_ids = [int(v) for v in self.values]
         
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
-        
+        cfg = load_json(guild.id)
         # We save this to basic_role_ids to keep it cohesive
         cfg["basic_role_ids"] = ordered_ids
-        configs[str(guild.id)] = cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(guild.id, cfg)
 
         cog = interaction.client.get_cog("RoleManager")
         if cog:
@@ -280,8 +277,7 @@ class BatchPrefixFormModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_json(guild.id)
         prefixes = cfg.get("role_prefixes", {})
 
         updated_summary = []
@@ -296,8 +292,7 @@ class BatchPrefixFormModal(discord.ui.Modal):
                 updated_summary.append(f"• {role.mention if role else role_id} ➔ *Cleared*")
 
         cfg["role_prefixes"] = prefixes
-        configs[str(guild.id)] = cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(guild.id, cfg)
 
         cog = interaction.client.get_cog("RoleManager")
         if cog:
@@ -416,8 +411,7 @@ class RankDashboardView(discord.ui.View):
             return
 
         guild = interaction.guild
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_json(guild.id)
 
         select_view = discord.ui.View(timeout=60)
         select_view.add_item(PrefixCategorySelect(guild, cfg))
@@ -445,8 +439,7 @@ class RankDashboardView(discord.ui.View):
             return
 
         guild = interaction.guild
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_json(guild.id)
 
         await interaction.response.send_message(
             "Choose a category below to adjust its role ranking hierarchy:",
@@ -469,13 +462,11 @@ class RoleManager(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         logger.info("[RoleManager] 🔄 Refreshing Rank Rules Dashboards on startup...")
-        configs = load_json(CONFIG_FILE)
         for guild in self.bot.guilds:
-            if str(guild.id) in configs:
-                try:
-                    await self.update_rank_dashboard(guild)
-                except Exception as e:
-                    logger.error(f"[RoleManager] Failed to auto-update dashboard for guild '{guild.name}': {e}", exc_info=True)
+            try:
+                await self.update_rank_dashboard(guild)
+            except Exception as e:
+                logger.error(f"[RoleManager] Failed to auto-update dashboard for guild '{guild.name}': {e}", exc_info=True)
         logger.info("[RoleManager] ✅ Rank Rules Dashboards refreshed!")
 
     async def _update_member_nickname_prefix(
@@ -559,8 +550,7 @@ class RoleManager(commands.Cog):
                 )
 
     async def update_rank_dashboard(self, guild: discord.Guild):
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_json(guild.id)
 
         channel_id = cfg.get("dashboard_channel_id")
         message_id = cfg.get("dashboard_message_id")
@@ -572,7 +562,7 @@ class RoleManager(commands.Cog):
         if not channel:
             try:
                 channel = await guild.fetch_channel(channel_id)
-            except (discord.NotFound, discord.HTTPException):
+            except (discord.NotFound, discord.HTTPException, discord.ClientException):
                 return
 
         if not isinstance(channel, discord.TextChannel):
@@ -726,14 +716,12 @@ class RoleManager(commands.Cog):
             pass
 
         cfg["dashboard_message_id"] = posted_msg.id
-        configs[str(guild.id)] = cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(guild.id, cfg)
 
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role):
         """Scorched-earth cleanup if a configured role is deleted from Discord Settings."""
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(role.guild.id), {})
+        cfg = load_json(role.guild.id)
 
         modified = False
         for key in ["basic_role_ids", "visitor_role_ids", "staff_role_ids", "rank_role_ids"]:
@@ -759,8 +747,7 @@ class RoleManager(commands.Cog):
 
         if modified:
             logger.info(f"[RoleManager] 🧹 Cleaned up deleted role '{role.name}' ({role.id}) from guild '{role.guild.name}' config.")
-            configs[str(role.guild.id)] = cfg
-            save_json(CONFIG_FILE, configs)
+            save_json(role.guild.id, cfg)
             await self.update_rank_dashboard(role.guild)
 
     @commands.Cog.listener()
@@ -770,7 +757,7 @@ class RoleManager(commands.Cog):
             return
 
         guild = after.guild
-        cfg = load_json(CONFIG_FILE).get(str(guild.id), {})
+        cfg = load_json(guild.id)
 
         # -----------------------------------------------------------------
         # NICKNAME PROTECTION / OVERRIDE BRANCH
@@ -943,8 +930,7 @@ class RoleManager(commands.Cog):
     async def force_rank_audit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        configs = load_json(CONFIG_FILE)
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_json(guild.id)
 
         audited_count = 0
         for member in guild.members:
@@ -976,8 +962,7 @@ class RoleManager(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        configs = load_json(CONFIG_FILE)
-        guild_cfg = configs.get(str(guild.id), {})
+        guild_cfg = load_json(guild.id)
 
         if member_role:
             guild_cfg["member_role_id"] = member_role.id
@@ -1000,8 +985,7 @@ class RoleManager(commands.Cog):
             parsed_rank_ids = parse_role_ids(guild, rank_roles)
             guild_cfg["rank_role_ids"] = parsed_rank_ids
 
-        configs[str(guild.id)] = guild_cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(guild.id, guild_cfg)
 
         await self.update_rank_dashboard(guild)
 
@@ -1066,13 +1050,11 @@ class RoleManager(commands.Cog):
             )
             return
 
-        configs = load_json(CONFIG_FILE)
-        guild_cfg = configs.get(str(interaction.guild_id), {})
+        guild_cfg = load_json(interaction.guild_id)
 
         guild_cfg["dashboard_channel_id"] = target_channel.id
         guild_cfg["dashboard_message_id"] = None
-        configs[str(interaction.guild_id)] = guild_cfg
-        save_json(CONFIG_FILE, configs)
+        save_json(interaction.guild_id, guild_cfg)
 
         await self.update_rank_dashboard(interaction.guild)
 

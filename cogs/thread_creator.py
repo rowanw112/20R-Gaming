@@ -58,7 +58,7 @@ class ThreadCreator(commands.Cog):
         created_threads = []
         failed_threads = []
 
-        mappings = load_thread_mappings() or []
+        mappings = load_thread_mappings(interaction.guild.id) or []
 
         for name in parsed_names:
             try:
@@ -113,7 +113,7 @@ class ThreadCreator(commands.Cog):
                 failed_threads.append(f"`{name}` ({e.text})")
 
         if role and created_threads:
-            save_thread_mappings(mappings)
+            save_thread_mappings(interaction.guild.id, mappings)
             thread_sync_cog = self.bot.get_cog("ThreadSync")
             if thread_sync_cog:
                 await thread_sync_cog.update_dashboard(interaction.guild)
@@ -147,7 +147,7 @@ class ThreadCreator(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
 
-        mappings = load_thread_mappings() or []
+        mappings = load_thread_mappings(interaction.guild.id) or []
         exists = any(
             m.get("role_id") == role.id and m.get("thread_id") == thread.id
             for m in mappings
@@ -167,7 +167,7 @@ class ThreadCreator(commands.Cog):
                 "created_by": interaction.user.id,
             }
         )
-        save_thread_mappings(mappings)
+        save_thread_mappings(interaction.guild.id, mappings)
 
         thread_sync_cog = self.bot.get_cog("ThreadSync")
         if thread_sync_cog:
@@ -192,7 +192,7 @@ class ThreadCreator(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
 
-        mappings = load_thread_mappings() or []
+        mappings = load_thread_mappings(interaction.guild.id) or []
         new_mappings = [
             m
             for m in mappings
@@ -206,7 +206,7 @@ class ThreadCreator(commands.Cog):
             )
             return
 
-        save_thread_mappings(new_mappings)
+        save_thread_mappings(interaction.guild.id, new_mappings)
 
         thread_sync_cog = self.bot.get_cog("ThreadSync")
         if thread_sync_cog:

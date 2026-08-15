@@ -129,7 +129,7 @@ class ConfirmModalDeleteView(discord.ui.View):
         deleted_channels = 0
         deleted_roles = 0
 
-        mappings = load_thread_mappings()
+        mappings = load_thread_mappings(interaction.guild.id)
         mapped_thread_ids = {t.id for t in self.threads_to_delete}
 
         # 1. Delete Threads
@@ -148,7 +148,7 @@ class ConfirmModalDeleteView(discord.ui.View):
                 for m in mappings
                 if m.get("thread_id") not in mapped_thread_ids
             ]
-            save_thread_mappings(new_mappings)
+            save_thread_mappings(interaction.guild.id, new_mappings)
 
         # 2. Delete Dedicated Channels
         for channel in self.channels_to_delete:
@@ -174,20 +174,20 @@ class ConfirmModalDeleteView(discord.ui.View):
         role_ids_to_match = {r.id for r in self.roles_to_delete}
         role_ids_to_match.add(self.target_role_id)
 
-        division_records = load_division_records()
+        division_records = load_division_records(interaction.guild.id)
         new_div_records = [
             r for r in division_records
             if r.get("member_role_id") not in role_ids_to_match
             and r.get("game_role_id") not in role_ids_to_match
         ]
-        save_division_records(new_div_records)
+        save_division_records(interaction.guild.id, new_div_records)
 
-        casual_records = load_casual_records()
+        casual_records = load_casual_records(interaction.guild.id)
         new_casual_records = [
             c for c in casual_records
             if c.get("role_id") not in role_ids_to_match
         ]
-        save_casual_records(new_casual_records)
+        save_casual_records(interaction.guild.id, new_casual_records)
 
         thread_sync_cog = interaction.client.get_cog("ThreadSync")
         if thread_sync_cog:
@@ -238,7 +238,7 @@ class ModalDivisionManager(commands.Cog):
         logger.info("[ModalDivisionManager] ✅ Hub Dashboards refreshed!")
 
     async def update_dashboard(self, guild: discord.Guild):
-        dash_config = load_hub_dashboard_config()
+        dash_config = load_hub_dashboard_config(guild.id)
         channel_id = dash_config.get("channel_id")
         message_id = dash_config.get("message_id")
 
@@ -249,13 +249,13 @@ class ModalDivisionManager(commands.Cog):
         if not channel:
             try:
                 channel = await guild.fetch_channel(channel_id)
-            except (discord.NotFound, discord.HTTPException):
+            except (discord.NotFound, discord.HTTPException, discord.ClientException):
                 return
 
         if not isinstance(channel, discord.TextChannel):
             return
 
-        defaults = load_hub_defaults()
+        defaults = load_hub_defaults(guild.id)
 
         embed = discord.Embed(
             title="⚙️ Division Setup — Default Hub & Role Configuration",
@@ -336,7 +336,7 @@ class ModalDivisionManager(commands.Cog):
 
             dash_config["channel_id"] = channel.id
             dash_config["message_id"] = posted_msg.id
-            save_hub_dashboard_config(dash_config)
+            save_hub_dashboard_config(guild.id, dash_config)
 
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.error(f"❌ Error posting Hub Dashboard in #{channel.name}: {e}")
@@ -417,7 +417,7 @@ class ModalDivisionManager(commands.Cog):
         game_staff_role_category: discord.Role = None,
         member_role_category: discord.Role = None,
     ):
-        defaults = load_hub_defaults()
+        defaults = load_hub_defaults(interaction.guild.id)
 
         if chat_hub is not None: defaults["chat_hub_id"] = chat_hub.id
         if clips_hub is not None: defaults["clips_hub_id"] = clips_hub.id
@@ -431,7 +431,7 @@ class ModalDivisionManager(commands.Cog):
         if game_staff_role_category is not None: defaults["game_staff_role_category_id"] = game_staff_role_category.id
         if member_role_category is not None: defaults["member_role_category_id"] = member_role_category.id
 
-        save_hub_defaults(defaults)
+        save_hub_defaults(interaction.guild.id, defaults)
         await interaction.response.send_message(
             "✅ Default hub configurations updated!", ephemeral=True
         )
@@ -459,7 +459,7 @@ class ModalDivisionManager(commands.Cog):
             )
             return
 
-        dash_config = load_hub_dashboard_config()
+        dash_config = load_hub_dashboard_config(interaction.guild.id)
         old_channel_id = dash_config.get("channel_id")
         old_message_id = dash_config.get("message_id")
 
@@ -471,12 +471,12 @@ class ModalDivisionManager(commands.Cog):
                 if isinstance(old_channel, discord.TextChannel):
                     old_msg = await old_channel.fetch_message(old_message_id)
                     await old_msg.delete()
-            except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+            except (discord.NotFound, discord.HTTPException, discord.Forbidden, discord.ClientException):
                 pass
 
         dash_config["channel_id"] = target_channel.id
         dash_config["message_id"] = None
-        save_hub_dashboard_config(dash_config)
+        save_hub_dashboard_config(interaction.guild.id, dash_config)
         await self.update_dashboard(interaction.guild)
 
         await interaction.followup.send(
@@ -505,7 +505,7 @@ class ModalDivisionManager(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        defaults = load_hub_defaults()
+        defaults = load_hub_defaults(guild.id)
 
         target_hub = chat_hub or (guild.get_channel(defaults.get("chat_hub_id")) if defaults.get("chat_hub_id") else None)
         target_anchor = casual_role_category or (guild.get_role(defaults.get("casual_role_category_id")) if defaults.get("casual_role_category_id") else None)
@@ -537,11 +537,11 @@ class ModalDivisionManager(commands.Cog):
         )
 
         # 4. Save Thread Mapping & Casual Record
-        mappings = load_thread_mappings()
+        mappings = load_thread_mappings(guild.id)
         mappings.append({"role_id": casual_role.id, "thread_id": chat_thread.id, "created_by": interaction.user.id})
-        save_thread_mappings(mappings)
+        save_thread_mappings(guild.id, mappings)
 
-        casual_records = load_casual_records()
+        casual_records = load_casual_records(guild.id)
         casual_records.append({
             "game_name": clean_game,
             "short_name": clean_short,
@@ -550,7 +550,7 @@ class ModalDivisionManager(commands.Cog):
             "thread_id": chat_thread.id,
             "is_casual": True,
         })
-        save_casual_records(casual_records)
+        save_casual_records(guild.id, casual_records)
 
         thread_sync_cog = self.bot.get_cog("ThreadSync")
         if thread_sync_cog:
@@ -608,7 +608,7 @@ class ModalDivisionManager(commands.Cog):
         if not guild:
             return
 
-        defaults = load_hub_defaults()
+        defaults = load_hub_defaults(guild.id)
 
         target_chat_hub = chat_hub or (guild.get_channel(defaults.get("chat_hub_id")) if defaults.get("chat_hub_id") else None)
         target_clips_hub = clips_hub or (guild.get_channel(defaults.get("clips_hub_id")) if defaults.get("clips_hub_id") else None)
@@ -735,7 +735,7 @@ class ModalDivisionManager(commands.Cog):
             announcements_chan = await guild.create_text_channel(name=f"{slug_short}-announcements", category=target_news_cat, overwrites=channel_overwrites)
 
             # 5. Create Private Threads & Save DB Mappings
-            mappings = load_thread_mappings()
+            mappings = load_thread_mappings(guild.id)
 
             chat_thread = await target_chat_hub.create_thread(name=f"{slug_short}-chat", type=discord.ChannelType.private_thread, invitable=False)
             mappings.append({"role_id": game_role.id, "thread_id": chat_thread.id, "created_by": interaction.user.id})
@@ -749,10 +749,10 @@ class ModalDivisionManager(commands.Cog):
             mappings.append({"role_id": div_staff_role.id, "thread_id": staff_thread.id, "created_by": interaction.user.id})
             mappings.append({"role_id": staff_role.id, "thread_id": staff_thread.id, "created_by": interaction.user.id})
 
-            save_thread_mappings(mappings)
+            save_thread_mappings(guild.id, mappings)
 
             # 6. Save Complete Division Record
-            records = load_division_records()
+            records = load_division_records(guild.id)
             records.append({
                 "game_name": clean_game,
                 "short_name": clean_short,
@@ -768,7 +768,7 @@ class ModalDivisionManager(commands.Cog):
                 "is_restrictive": is_restrictive,
                 "is_casual": False,
             })
-            save_division_records(records)
+            save_division_records(guild.id, records)
 
             thread_sync_cog = self.bot.get_cog("ThreadSync")
             if thread_sync_cog:
@@ -845,9 +845,9 @@ class ModalDivisionManager(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
-        defaults = load_hub_defaults()
+        defaults = load_hub_defaults(guild.id)
 
-        casual_records = load_casual_records()
+        casual_records = load_casual_records(guild.id)
         record = next((r for r in casual_records if r.get("role_id") == casual_role.id), None)
 
         clean_game = record["game_name"] if record else casual_role.name
@@ -973,7 +973,7 @@ class ModalDivisionManager(commands.Cog):
         info_chan = await guild.create_text_channel(name=f"{slug_short}-info", category=target_info_cat, overwrites=channel_overwrites)
         announcements_chan = await guild.create_text_channel(name=f"{slug_short}-announcements", category=target_news_cat, overwrites=channel_overwrites)
 
-        mappings = load_thread_mappings()
+        mappings = load_thread_mappings(guild.id)
         thread_ids_created = []
 
         # 5. REUSE EXISTING CASUAL THREAD FOR CHAT
@@ -983,7 +983,7 @@ class ModalDivisionManager(commands.Cog):
             if not chat_thread:
                 try:
                     chat_thread = await guild.fetch_channel(record.get("thread_id"))
-                except (discord.NotFound, discord.HTTPException):
+                except (discord.NotFound, discord.HTTPException, discord.ClientException):
                     pass
 
         if chat_thread and isinstance(chat_thread, discord.Thread):
@@ -1014,14 +1014,14 @@ class ModalDivisionManager(commands.Cog):
             mappings.append({"role_id": staff_role.id, "thread_id": staff_thread.id, "created_by": interaction.user.id})
             thread_ids_created.append(staff_thread.id)
 
-        save_thread_mappings(mappings)
+        save_thread_mappings(guild.id, mappings)
 
         # 7. Clean up Casual JSON & Save Division Record
         if record:
             new_casual = [c for c in casual_records if c.get("role_id") != casual_role.id]
-            save_casual_records(new_casual)
+            save_casual_records(guild.id, new_casual)
 
-        records = load_division_records()
+        records = load_division_records(guild.id)
         records.append({
             "game_name": clean_game,
             "short_name": clean_short,
@@ -1037,7 +1037,7 @@ class ModalDivisionManager(commands.Cog):
             "is_restrictive": is_restrictive,
             "is_casual": False,
         })
-        save_division_records(records)
+        save_division_records(guild.id, records)
 
         # 8. FORCE IMMEDIATE AUDITS & DASHBOARD UPDATE
         thread_sync_cog = self.bot.get_cog("ThreadSync")
@@ -1095,8 +1095,8 @@ class ModalDivisionManager(commands.Cog):
             )
             return
 
-        div_records = load_division_records()
-        casual_records = load_casual_records()
+        div_records = load_division_records(guild.id)
+        casual_records = load_casual_records(guild.id)
 
         updated = False
         game_label = ""
@@ -1124,7 +1124,7 @@ class ModalDivisionManager(commands.Cog):
                 break
 
         if updated:
-            save_division_records(div_records)
+            save_division_records(guild.id, div_records)
 
         # 2. Search & Update Casual Records
         if not updated:
@@ -1147,11 +1147,11 @@ class ModalDivisionManager(commands.Cog):
                     break
 
             if updated:
-                save_casual_records(casual_records)
+                save_casual_records(guild.id, casual_records)
 
         # 3. Search & Update Legacy Records
         if not updated:
-            legacy_records = load_legacy_division_records()
+            legacy_records = load_legacy_division_records(guild.id)
             for record in legacy_records:
                 if target_role.id in (record.get("game_role_id"), record.get("public_role_id"), record.get("member_role_id")):
                     if new_game_name:
@@ -1169,7 +1169,7 @@ class ModalDivisionManager(commands.Cog):
                     break
 
             if updated:
-                save_legacy_division_records(legacy_records)
+                save_legacy_division_records(guild.id, legacy_records)
 
         if not updated:
             await interaction.followup.send(
@@ -1201,7 +1201,7 @@ class ModalDivisionManager(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def list_hub_divisions(self, interaction: discord.Interaction):
-        records = load_division_records()
+        records = load_division_records(interaction.guild.id)
         if not records:
             await interaction.response.send_message("❌ No Hub Divisions are currently registered.", ephemeral=True)
             return
@@ -1240,10 +1240,10 @@ class ModalDivisionManager(commands.Cog):
         announcements_channel: discord.TextChannel = None,
     ):
         guild = interaction.guild
-        defaults = load_hub_defaults()
-        div_records = load_division_records()
-        casual_records = load_casual_records()
-        mappings = load_thread_mappings()
+        defaults = load_hub_defaults(guild.id)
+        div_records = load_division_records(guild.id)
+        casual_records = load_casual_records(guild.id)
+        mappings = load_thread_mappings(guild.id)
 
         threads_to_delete = []
         channels_to_delete = []

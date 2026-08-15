@@ -29,7 +29,7 @@ class ThreadSync(commands.Cog):
 
     async def run_full_thread_audit(self, guild: discord.Guild):
         """Audits all mapped private threads and adds members holding the required role."""
-        mappings = load_thread_mappings() or []
+        mappings = load_thread_mappings(guild.id) or []
         if not mappings:
             return
 
@@ -46,7 +46,7 @@ class ThreadSync(commands.Cog):
             if not thread:
                 try:
                     thread = await guild.fetch_channel(thread_id)
-                except (discord.NotFound, discord.HTTPException):
+                except (discord.NotFound, discord.HTTPException, discord.ClientException):
                     continue
 
             if not role or not isinstance(thread, discord.Thread):
@@ -62,7 +62,7 @@ class ThreadSync(commands.Cog):
 
     async def update_dashboard(self, guild: discord.Guild):
         """Updates or posts the live Thread Sync Dashboard embed, grouping threads that share role sets."""
-        dash_cfg = load_thread_sync_dashboard_config()
+        dash_cfg = load_thread_sync_dashboard_config(guild.id)
         channel_id = dash_cfg.get("channel_id")
         message_id = dash_cfg.get("message_id")
 
@@ -73,13 +73,13 @@ class ThreadSync(commands.Cog):
         if not channel:
             try:
                 channel = await guild.fetch_channel(channel_id)
-            except (discord.NotFound, discord.HTTPException):
+            except (discord.NotFound, discord.HTTPException, discord.ClientException):
                 return
 
         if not isinstance(channel, discord.TextChannel):
             return
 
-        mappings = load_thread_mappings() or []
+        mappings = load_thread_mappings(guild.id) or []
 
         embed = discord.Embed(
             title="🧵 Private Thread Sync Dashboard",
@@ -119,7 +119,7 @@ class ThreadSync(commands.Cog):
                 if not t:
                     try:
                         t = guild.get_channel(t_id)
-                    except (discord.NotFound, discord.HTTPException):
+                    except (discord.NotFound, discord.HTTPException, discord.ClientException):
                         pass
                 thread_mentions.append(f"🔒 {t.mention}" if t else f"`Thread ID: {t_id}`")
 
@@ -181,7 +181,7 @@ class ThreadSync(commands.Cog):
 
             dash_cfg["channel_id"] = channel.id
             dash_cfg["message_id"] = posted_msg.id
-            save_thread_sync_dashboard_config(dash_cfg)
+            save_thread_sync_dashboard_config(guild.id, dash_cfg)
 
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.error(f"❌ Error posting Thread Sync Dashboard in #{channel.name}: {e}")
@@ -204,7 +204,7 @@ class ThreadSync(commands.Cog):
         if not added_roles and not removed_roles:
             return
 
-        mappings = load_thread_mappings() or []
+        mappings = load_thread_mappings(after.guild.id) or []
         if not mappings:
             return
 
@@ -220,7 +220,7 @@ class ThreadSync(commands.Cog):
                     if not thread:
                         try:
                             thread = await after.guild.fetch_channel(thread_id)
-                        except (discord.NotFound, discord.HTTPException):
+                        except (discord.NotFound, discord.HTTPException, discord.ClientException):
                             continue
 
                     if isinstance(thread, discord.Thread):
@@ -252,7 +252,7 @@ class ThreadSync(commands.Cog):
                     if not thread:
                         try:
                             thread = await after.guild.fetch_channel(thread_id)
-                        except (discord.NotFound, discord.HTTPException):
+                        except (discord.NotFound, discord.HTTPException, discord.ClientException):
                             continue
 
                     if isinstance(thread, discord.Thread):
@@ -279,7 +279,7 @@ class ThreadSync(commands.Cog):
         if not message.mentions:
             return
 
-        mappings = load_thread_mappings()
+        mappings = load_thread_mappings(message.guild.id)
         if not mappings:
             return
 

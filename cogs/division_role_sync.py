@@ -39,7 +39,7 @@ class DivisionRoleSync(commands.Cog):
 
     async def update_sync_dashboard(self, guild: discord.Guild):
         """Creates or updates the live Division Sync & Mapping Dashboard embed in the configured channel."""
-        cfg = load_role_sync_config()
+        cfg = load_role_sync_config(guild.id)
         guild_cfg = cfg.get(str(guild.id), {})
 
         if isinstance(guild_cfg, int):  # Migration check for old config format
@@ -61,8 +61,8 @@ class DivisionRoleSync(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
 
-        hub_records = load_division_records() or []
-        legacy_records = load_legacy_division_records() or []
+        hub_records = load_division_records(guild.id) or []
+        legacy_records = load_legacy_division_records(guild.id) or []
 
         embed = discord.Embed(
             title="🗺️ Division Mapping & Auto-Sync Dashboard",
@@ -135,7 +135,7 @@ class DivisionRoleSync(commands.Cog):
             guild_cfg["channel_id"] = channel.id
             guild_cfg["message_id"] = posted_msg.id
             cfg[str(guild.id)] = guild_cfg
-            save_role_sync_config(cfg)
+            save_role_sync_config(guild.id, cfg)
 
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.error(f"❌ Error posting Sync Dashboard in #{channel.name}: {e}")
@@ -160,12 +160,12 @@ class DivisionRoleSync(commands.Cog):
             return
 
         guild = member.guild
-        rank_cfg = load_rank_config().get(str(guild.id), {})
+        rank_cfg = load_rank_config(guild.id)  # FIX: Correctly passing guild.id directly
 
         is_official = self._is_member_or_recruit(member, rank_cfg)
 
-        hub_records = load_division_records() or []
-        legacy_records = load_legacy_division_records() or []
+        hub_records = load_division_records(guild.id) or []
+        legacy_records = load_legacy_division_records(guild.id) or []
         all_records = hub_records + legacy_records
 
         if not all_records:
@@ -247,7 +247,7 @@ class DivisionRoleSync(commands.Cog):
             )
             return
 
-        cfg = load_role_sync_config()
+        cfg = load_role_sync_config(interaction.guild.id)
         guild_cfg = cfg.get(str(interaction.guild.id), {})
         if isinstance(guild_cfg, int):
             guild_cfg = {"channel_id": guild_cfg, "message_id": None}
@@ -267,7 +267,7 @@ class DivisionRoleSync(commands.Cog):
         guild_cfg["channel_id"] = target_channel.id
         guild_cfg["message_id"] = None
         cfg[str(interaction.guild.id)] = guild_cfg
-        save_role_sync_config(cfg)
+        save_role_sync_config(interaction.guild.id, cfg)
 
         await self.update_sync_dashboard(interaction.guild)
 
@@ -291,7 +291,7 @@ class DivisionRoleSync(commands.Cog):
     ):
         await interaction.response.defer(ephemeral=True)
 
-        records = load_legacy_division_records()
+        records = load_legacy_division_records(interaction.guild.id)
 
         existing = next((r for r in records if r.get("member_role_id") == division_role.id), None)
         if existing:
@@ -308,7 +308,7 @@ class DivisionRoleSync(commands.Cog):
             })
             msg = f"✅ Registered new legacy division **{division_name}**."
 
-        save_legacy_division_records(records)
+        save_legacy_division_records(interaction.guild.id, records)
         await self.update_sync_dashboard(interaction.guild)
 
         status_type = "🔒 Restrictive (Application Only)" if is_restrictive else "🔓 Open (Auto-Synced)"
@@ -327,7 +327,7 @@ class DivisionRoleSync(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def list_legacy_divisions(self, interaction: discord.Interaction):
-        records = load_legacy_division_records()
+        records = load_legacy_division_records(interaction.guild.id)
         if not records:
             await interaction.response.send_message("❌ No legacy divisions are currently registered.", ephemeral=True)
             return

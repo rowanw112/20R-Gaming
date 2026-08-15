@@ -10,9 +10,6 @@ from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = "data/dynamic_voice_config.json"
-RANK_CONFIG_FILE = "data/rank_system_config.json"
-
 # Day 1 Starter Pack. Deliberately using "europe" instead of "rotterdam" so you can trigger the 400 error!
 DEFAULT_REGIONS = [
     "brazil", "hongkong", "india", "japan", "europe", 
@@ -21,31 +18,38 @@ DEFAULT_REGIONS = [
 ]
 
 
-def load_config() -> dict:
-    if not os.path.exists(CONFIG_FILE):
-        return {}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+def get_config_path(guild_id: int, filename: str) -> str:
+    path = f"data/{guild_id}"
+    os.makedirs(path, exist_ok=True)
+    return f"{path}/{filename}"
 
 
-def save_config(data: dict):
-    if "/" in CONFIG_FILE:
-        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+def load_config(guild_id: int) -> dict:
+    filepath = get_config_path(guild_id, "dynamic_voice_config.json")
+    if os.path.exists(filepath):
+        with open(filepath, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
+def save_config(guild_id: int, data: dict):
+    filepath = get_config_path(guild_id, "dynamic_voice_config.json")
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 
-def load_rank_config() -> dict:
-    if not os.path.exists(RANK_CONFIG_FILE):
-        return {}
-    with open(RANK_CONFIG_FILE, "r", encoding="utf-8") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError:
-            return {}
+def load_rank_config(guild_id: int) -> dict:
+    filepath = get_config_path(guild_id, "rank_system_config.json")
+    if os.path.exists(filepath):
+        with open(filepath, "r", encoding="utf-8") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                pass
+    return {}
 
 
 def get_clean_username(member: discord.Member) -> str:
@@ -98,8 +102,7 @@ class DynamicVoiceControlView(discord.ui.View):
 
     async def _get_vc_data(self, interaction: discord.Interaction) -> tuple[int | None, int | None]:
         """Fetches the owner ID and index from config. Returns (owner_id, index)."""
-        configs = load_config()
-        cfg = configs.get(str(interaction.guild_id), {})
+        cfg = load_config(interaction.guild_id)
         channel_data = cfg.get("active_channels", {}).get(str(interaction.channel_id))
 
         if not channel_data:
@@ -196,8 +199,7 @@ class DynamicVoiceControlView(discord.ui.View):
         owner_id, index = await self._get_vc_data(interaction)
         if not owner_id: return
 
-        configs = load_config()
-        guild_cfg = configs.get(str(interaction.guild.id), {})
+        guild_cfg = load_config(interaction.guild.id)
         valid_regions = guild_cfg.get("valid_voice_regions", DEFAULT_REGIONS)
 
         options = [
@@ -227,18 +229,16 @@ class DynamicVoiceControlView(discord.ui.View):
                 display_name = "Automatic" if val == "auto" else get_region_label(val)
                 await select_interaction.edit_original_response(content=f"✅ Voice region successfully set to **{display_name}**.", view=None)
             except discord.HTTPException as e:
-                # Intelligent 400 Error Handler to learn API updates automatically[cite: 12]
+                # Intelligent 400 Error Handler to learn API updates automatically
                 if e.status == 400 and "rtc_region" in str(e) and "Value must be one of" in str(e):
                     match = re.search(r"Value must be one of \((.*?)\)", str(e))
                     if match:
                         raw_list = match.group(1).replace("'", "").replace(" ", "")
                         new_regions = raw_list.split(",")
                         
-                        current_cfg = load_config()
-                        g_cfg = current_cfg.get(str(interaction.guild.id), {})
+                        g_cfg = load_config(interaction.guild.id)
                         g_cfg["valid_voice_regions"] = new_regions
-                        current_cfg[str(interaction.guild.id)] = g_cfg
-                        save_config(current_cfg)
+                        save_config(interaction.guild.id, g_cfg)
                         
                         logger.info(f"[DynamicVoice] Extracted and updated valid voice regions from API error: {new_regions}")
                         await select_interaction.edit_original_response(
@@ -313,8 +313,7 @@ class DynamicVoiceControlView(discord.ui.View):
             new_overwrite.mute_members = True
             await channel.set_permissions(new_owner, overwrite=new_overwrite)
 
-            configs = load_config()
-            cfg = configs.get(str(guild.id), {})
+            cfg = load_config(guild.id)
             template = cfg.get("channel_name_format", "#{index}-{username}'s-Channel")
 
             expected_old_name = format_channel_name(template, index, old_owner) if old_owner else ""
@@ -323,8 +322,7 @@ class DynamicVoiceControlView(discord.ui.View):
                 await channel.edit(name=new_channel_name)
 
             cfg["active_channels"][str(channel.id)]["owner_id"] = new_owner.id
-            configs[str(guild.id)] = cfg
-            save_config(configs)
+            save_config(guild.id, cfg)
 
             embed = interaction.message.embeds[0]
             clean_name = get_clean_username(new_owner)
@@ -355,8 +353,7 @@ class DynamicVoiceControlView(discord.ui.View):
         guild = interaction.guild
         channel = interaction.channel
 
-        configs = load_config()
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_config(guild.id)
         restricted_role_id = cfg.get("mute_restricted_role_id")
         
         if restricted_role_id and restricted_role_id in [r.id for r in interaction.user.roles]:
@@ -394,7 +391,7 @@ class DynamicVoiceControlView(discord.ui.View):
                 asyncio.create_task(cleanup())
                 return
 
-            rank_cfg = load_rank_config().get(str(guild.id), {})
+            rank_cfg = load_rank_config(guild.id)
             staff_ids = rank_cfg.get("staff_role_ids", [])
             target_role_ids = [r.id for r in target.roles]
             
@@ -504,10 +501,9 @@ class DynamicVoice(commands.Cog):
     async def on_ready(self):
         """Scans for and cleans up empty dynamic voice channels that were orphaned while the bot was offline."""
         logger.info("[DynamicVoice] 🔄 Running startup orphaned channel sweep...")
-        configs = load_config()
         
         for guild in self.bot.guilds:
-            cfg = configs.get(str(guild.id), {})
+            cfg = load_config(guild.id)
             active_channels = cfg.get("active_channels", {})
             
             if not active_channels:
@@ -555,8 +551,7 @@ class DynamicVoice(commands.Cog):
                     if ch_id_str in active_channels:
                         del active_channels[ch_id_str]
                 cfg["active_channels"] = active_channels
-                configs[str(guild.id)] = cfg
-                save_config(configs)
+                save_config(guild.id, cfg)
                 
         logger.info("[DynamicVoice] ✅ Startup orphaned channel sweep complete!")
 
@@ -564,8 +559,7 @@ class DynamicVoice(commands.Cog):
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Monitors voice moves and handles channel creation & teardown."""
         guild = member.guild
-        configs = load_config()
-        cfg = configs.get(str(guild.id), {})
+        cfg = load_config(guild.id)
 
         hub_ids = cfg.get("hub_channel_ids", [])
         active_channels = cfg.get("active_channels", {})
@@ -637,8 +631,7 @@ class DynamicVoice(commands.Cog):
 
                 active_channels[str(new_channel.id)] = {"index": index_counter, "owner_id": member.id, "control_msg_id": control_msg.id}
                 cfg["active_channels"] = active_channels
-                configs[str(guild.id)] = cfg
-                save_config(configs)
+                save_config(guild.id, cfg)
 
                 await member.move_to(new_channel)
 
@@ -653,8 +646,7 @@ class DynamicVoice(commands.Cog):
                 try:
                     del active_channels[str(left_channel.id)]
                     cfg["active_channels"] = active_channels
-                    configs[str(guild.id)] = cfg
-                    save_config(configs)
+                    save_config(guild.id, cfg)
 
                     await left_channel.delete(reason="Dynamic Voice Channel empty - Auto teardown")
                     logger.info(f"[DynamicVoice] Deleted empty voice channel #{left_channel.name}.")
@@ -686,8 +678,7 @@ class DynamicVoice(commands.Cog):
 
                         active_channels[str(left_channel.id)]["owner_id"] = new_owner.id
                         cfg["active_channels"] = active_channels
-                        configs[str(guild.id)] = cfg
-                        save_config(configs)
+                        save_config(guild.id, cfg)
 
                         index = channel_data.get("index")
                         expected_old_name = format_channel_name(name_template, index, member)
@@ -743,8 +734,7 @@ class DynamicVoice(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        configs = load_config()
-        guild_cfg = configs.get(str(guild.id), {"hub_channel_ids": [], "active_channels": {}})
+        guild_cfg = load_config(guild.id)
 
         target_hub = existing_channel
 
@@ -770,8 +760,7 @@ class DynamicVoice(commands.Cog):
         fmt_to_save = channel_name_format.strip() if channel_name_format else "#{index}-{username}'s-Channel"
         guild_cfg["channel_name_format"] = fmt_to_save
 
-        configs[str(guild.id)] = guild_cfg
-        save_config(configs)
+        save_config(guild.id, guild_cfg)
 
         restricted_msg = f"\n• **Mute Restricted Role:** {mute_restricted_role.mention}" if mute_restricted_role else ""
 

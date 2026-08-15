@@ -1,22 +1,39 @@
+import json
 import logging
 import os
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
-CONFIG = {
-    # Production Server Configuration
-    531243268256694313: {
-        "WELCOME_CHANNEL_ID": 589941950837293070,
-    },
-    # Test Server Configuration
-    1530922810275528774: {
-        "WELCOME_CHANNEL_ID": 1533549537967214652,  # Test Join/Leave Channel
-    },
-}
-
 WELCOME_IMAGE_PATH = "data/images/20r-show-channels.png"
+
+
+def get_config_path(guild_id: int) -> str:
+    path = f"data/{guild_id}"
+    os.makedirs(path, exist_ok=True)
+    return f"{path}/welcome_config.json"
+
+
+def load_config(guild_id: int) -> dict:
+    filepath = get_config_path(guild_id)
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load welcome config for {guild_id}: {e}")
+    return {}
+
+
+def save_config(guild_id: int, data: dict):
+    filepath = get_config_path(guild_id)
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        logger.error(f"Failed to save welcome config for {guild_id}: {e}")
 
 
 class Welcome(commands.Cog):
@@ -26,10 +43,11 @@ class Welcome(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         guild_id = member.guild.id
-        guild_config = CONFIG.get(guild_id)
+        guild_config = load_config(guild_id)
 
-        if not guild_config:
-            logger.warning(f"Join event in unconfigured guild: {member.guild.name} ({guild_id})")
+        channel_id = guild_config.get("welcome_channel_id")
+        if not channel_id:
+            # Silently ignore if no channel is configured
             return
 
         # 1. Send Welcome Instructions DM (Replaces Default Role Assignment)
@@ -70,7 +88,6 @@ class Welcome(commands.Cog):
                 logger.warning(f"Could not send welcome DM to {member.display_name} (DMs might be closed): {e}")
 
         # 2. Send Public Welcome Embed Card in Channel
-        channel_id = guild_config.get("WELCOME_CHANNEL_ID")
         channel = member.guild.get_channel(channel_id)
 
         if channel and isinstance(channel, discord.TextChannel):
@@ -95,12 +112,12 @@ class Welcome(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         guild_id = member.guild.id
-        guild_config = CONFIG.get(guild_id)
+        guild_config = load_config(guild_id)
 
-        if not guild_config:
+        channel_id = guild_config.get("welcome_channel_id")
+        if not channel_id:
             return
 
-        channel_id = guild_config.get("WELCOME_CHANNEL_ID")
         channel = member.guild.get_channel(channel_id)
 
         if channel and isinstance(channel, discord.TextChannel):
@@ -109,6 +126,21 @@ class Welcome(commands.Cog):
                 logger.info(f"Logged member leave for {member.display_name}")
             except discord.HTTPException as e:
                 logger.error(f"Failed to send leave message in {channel.name}: {e}")
+
+    @app_commands.command(
+        name="set_welcome_channel",
+        description="Set the channel where the bot will post join/leave messages."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_welcome_channel(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
+        await interaction.response.defer(ephemeral=True)
+        target_channel = channel or interaction.channel
+        
+        cfg = load_config(interaction.guild.id)
+        cfg["welcome_channel_id"] = target_channel.id
+        save_config(interaction.guild.id, cfg)
+        
+        await interaction.followup.send(f"✅ Welcome & Leave logs will now be posted in {target_channel.mention}!", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
