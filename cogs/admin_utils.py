@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import os
 import discord
@@ -10,6 +11,37 @@ import sys
 logger = logging.getLogger(__name__)
 
 LOG_DIR = "logs"
+
+
+class RoleOverlapAuditView(discord.ui.View):
+    def __init__(self, members: list[discord.Member], roles: list[discord.Role]):
+        super().__init__(timeout=300)
+        self.members = members
+        self.roles = roles
+        
+    @discord.ui.button(label="Generate Report (TXT)", style=discord.ButtonStyle.primary, emoji="📄")
+    async def generate_report(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.members:
+            await interaction.response.send_message("❌ No members matched this criteria to generate a report.", ephemeral=True)
+            return
+            
+        role_names = ", ".join([r.name for r in self.roles])
+        
+        # Build the text file content
+        lines = ["--- 20R Role Intersection Audit Report ---"]
+        lines.append(f"Target Roles: {role_names}")
+        lines.append(f"Total Matches: {len(self.members)}\n")
+        lines.append(f"{'User ID':<20} | {'Username':<32} | {'Display Name'}")
+        lines.append("-" * 80)
+        
+        for m in self.members:
+            lines.append(f"{m.id:<20} | {str(m):<32} | {m.display_name}")
+            
+        # Convert to a virtual file
+        buffer = io.BytesIO("\n".join(lines).encode('utf-8'))
+        file = discord.File(buffer, filename="role_audit_report.txt")
+        
+        await interaction.response.send_message("📄 **Report Generated:**", file=file, ephemeral=True)
 
 
 class AdminUtils(commands.Cog):
@@ -332,6 +364,51 @@ class AdminUtils(commands.Cog):
         )
 
     # -------------------------------------------------------------------------
+    # 6. ROLE OVERLAP AUDIT
+    # -------------------------------------------------------------------------
+    @app_commands.command(
+        name="audit_role_overlap",
+        description="Find out exactly how many users hold ALL of the selected roles at the same time."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def audit_role_overlap(
+        self, 
+        interaction: discord.Interaction, 
+        role_1: discord.Role, 
+        role_2: discord.Role,
+        role_3: discord.Role = None,
+        role_4: discord.Role = None,
+        role_5: discord.Role = None
+    ):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Collect unique roles and filter out empty optional slots
+        selected_roles = [r for r in [role_1, role_2, role_3, role_4, role_5] if r is not None]
+        unique_roles = list({r.id: r for r in selected_roles}.values())
+        
+        if len(unique_roles) < 2:
+            await interaction.followup.send("❌ Please select at least two distinct roles to compare.", ephemeral=True)
+            return
+            
+        # Find intersecting members (Members who have ALL selected roles)
+        matched_members = []
+        for member in interaction.guild.members:
+            if all(role in member.roles for role in unique_roles):
+                matched_members.append(member)
+                
+        # Build the summary embed
+        role_mentions = "\n".join([f"• {r.mention}" for r in unique_roles])
+        embed = discord.Embed(
+            title="🔍 Role Overlap Audit",
+            description=f"Searching for members who currently hold **ALL** of the following roles:\n\n{role_mentions}",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Total Matches Found", value=f"👥 **{len(matched_members)}** members", inline=False)
+        
+        view = RoleOverlapAuditView(matched_members, unique_roles)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    # -------------------------------------------------------------------------
     # ERROR HANDLERS
     # -------------------------------------------------------------------------
     @update_names.error
@@ -339,6 +416,7 @@ class AdminUtils(commands.Cog):
     @get_logs.error
     @clear_messages.error
     @restrict_mentions.error
+    @audit_role_overlap.error
     async def admin_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
