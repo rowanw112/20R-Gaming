@@ -555,9 +555,7 @@ class RoleManager(commands.Cog):
 
         user_role_ids = {r.id for r in member.roles}
 
-        # ---------------------------------------------------------------------
         # 1. CUSTOM PREFIX BYPASS CHECK
-        # ---------------------------------------------------------------------
         custom_prefix_role_id = cfg.get("custom_prefix_role_id")
         if custom_prefix_role_id and custom_prefix_role_id in user_role_ids:
             return
@@ -566,6 +564,10 @@ class RoleManager(commands.Cog):
         if not prefixes:
             return
         
+        def clean_tag(tag: str) -> str:
+            clean = tag.strip().strip("[]()")
+            return f"[{clean}]"
+
         elite_ids = cfg.get("elite_role_ids", [])
         staff_ids = cfg.get("staff_role_ids", [])
         rank_ids = cfg.get("rank_role_ids", [])
@@ -583,21 +585,44 @@ class RoleManager(commands.Cog):
         priority_order.extend(basic_ids)
         priority_order.extend(visitor_ids)
 
-        # ---------------------------------------------------------------------
-        # 2. CHECK IF USER HOLDS A MAPPED ROLE
-        # ---------------------------------------------------------------------
-        has_mapped_role = any(rid in user_role_ids for rid in priority_order)
-        if not has_mapped_role:
-            return
-
         active_prefix = None
         for rid in priority_order:
             if rid in user_role_ids and str(rid) in prefixes:
                 active_prefix = prefixes[str(rid)]
                 break
 
+        current_nick = member.display_name
+        clean_name = re.sub(r"^\[.*?\]\s*|^\(.*?\)\s*", "", current_nick).strip()
+
+        # 2. STRIP LEFTOVER/UNAUTHORIZED OFFICIAL TAGS
         if not active_prefix:
+            all_bot_tags = [clean_tag(t) for t in prefixes.values() if t.strip()]
+            
+            # Check if they have an official tag they no longer qualify for
+            has_unauthorized_tag = any(current_nick.startswith(tag + " ") or current_nick == tag for tag in all_bot_tags)
+            
+            if has_unauthorized_tag:
+                target_nick = clean_name[:32]
+                if current_nick != target_nick:
+                    try:
+                        await member.edit(nick=target_nick, reason="Stripped leftover/unauthorized bot prefix")
+                        logger.info(f"[RoleManager] 🧹 Stripped leftover/unauthorized tag from {member.display_name}")
+                    except discord.HTTPException:
+                        pass
             return
+
+        # 3. APPLY VALID TAG
+        formatted_prefix = clean_tag(active_prefix)
+        target_nick = f"{formatted_prefix} {clean_name}"[:32]
+
+        if current_nick != target_nick:
+            try:
+                await member.edit(nick=target_nick, reason="Dynamic Role Prefix Sync")
+                logger.info(f"[RoleManager] 🏷️ Nickname Updated: '{current_nick}' ➔ '{target_nick}'")
+            except discord.Forbidden:
+                logger.warning(f"[RoleManager] ⚠️ Lacking permissions to edit nickname for {member.display_name}.")
+            except discord.HTTPException:
+                pass
             
         def clean_tag(tag: str) -> str:
             clean = tag.strip().strip("[]()")
