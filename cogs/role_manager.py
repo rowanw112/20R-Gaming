@@ -52,6 +52,52 @@ def parse_role_ids(guild: discord.Guild, input_str: str | None) -> list[int]:
 # -------------------------------------------------------------------------
 # HIERARCHY ORDER CONFIGURATION SELECT & VIEW
 # -------------------------------------------------------------------------
+class EliteHierarchyOrderSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, elite_roles: list[discord.Role]):
+        self.guild = guild
+        self.elite_roles = elite_roles
+
+        options = [
+            discord.SelectOption(
+                label=r.name[:100],
+                value=str(r.id),
+                description=f"Role ID: {r.id}"
+            )
+            for r in elite_roles[:25]
+        ]
+
+        super().__init__(
+            placeholder="Select Elite Roles in HIGHEST to LOWEST order...",
+            min_values=1,
+            max_values=len(options),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        ordered_ids = [int(v) for v in self.values]
+        
+        cfg = load_json(guild.id)
+        cfg["elite_role_ids"] = ordered_ids
+        save_json(guild.id, cfg)
+
+        cog = interaction.client.get_cog("RoleManager")
+        if cog:
+            await cog.update_rank_dashboard(guild)
+
+        rank_disp = interaction.client.get_cog("RankDisplay")
+        if rank_disp:
+            await rank_disp.update_public_display(guild)
+
+        summary = "\n".join([f"{idx+1}. <@&{rid}>" for idx, rid in enumerate(ordered_ids)])
+        await interaction.followup.send(
+            f"✅ **Elite Hierarchy Saved (Highest ➔ Lowest):**\n{summary}",
+            ephemeral=True,
+        )
+
+
 class StaffHierarchyOrderSelect(discord.ui.Select):
     def __init__(self, guild: discord.Guild, staff_roles: list[discord.Role]):
         self.guild = guild
@@ -172,7 +218,6 @@ class BasicHierarchyOrderSelect(discord.ui.Select):
         ordered_ids = [int(v) for v in self.values]
         
         cfg = load_json(guild.id)
-        # We save this to basic_role_ids to keep it cohesive
         cfg["basic_role_ids"] = ordered_ids
         save_json(guild.id, cfg)
 
@@ -197,7 +242,24 @@ class HierarchyCategorySelectView(discord.ui.View):
         self.guild = guild
         self.cfg = cfg
 
-    @discord.ui.button(label="Re-Order Staff Hierarchy", style=discord.ButtonStyle.primary, emoji="🛡️")
+    @discord.ui.button(label="Re-Order Elite Roles", style=discord.ButtonStyle.primary, emoji="🔱")
+    async def configure_elite(self, interaction: discord.Interaction, button: discord.ui.Button):
+        elite_ids = self.cfg.get("elite_role_ids", [])
+        elite_roles = [self.guild.get_role(rid) for rid in elite_ids if self.guild.get_role(rid)]
+
+        if not elite_roles:
+            await interaction.response.send_message("❌ No elite roles configured yet. Run `/setup_rank_roles` first!", ephemeral=True)
+            return
+
+        select_view = discord.ui.View(timeout=60)
+        select_view.add_item(EliteHierarchyOrderSelect(self.guild, elite_roles))
+        await interaction.response.send_message(
+            "Select the Elite roles below in order from **HIGHEST prestige** to **LOWEST prestige**:",
+            view=select_view,
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Re-Order Staff Roles", style=discord.ButtonStyle.primary, emoji="🛡️")
     async def configure_staff(self, interaction: discord.Interaction, button: discord.ui.Button):
         staff_ids = self.cfg.get("staff_role_ids", [])
         staff_roles = [self.guild.get_role(rid) for rid in staff_ids if self.guild.get_role(rid)]
@@ -265,7 +327,7 @@ class BatchPrefixFormModal(discord.ui.Modal):
             current = current_prefixes.get(str(role.id), "")
             text_input = discord.ui.TextInput(
                 label=f"Tag for {role.name[:30]}",
-                placeholder="e.g. [R], [I], [Mod], or leave blank",
+                placeholder="e.g. [R], [I], [VG], or leave blank",
                 default=current,
                 required=False,
                 max_length=15,
@@ -317,6 +379,16 @@ class PrefixCategorySelect(discord.ui.Select):
 
         options = []
         
+        elite_ids = cfg.get("elite_role_ids", [])
+        if elite_ids:
+            for i in range(0, len(elite_ids), 5):
+                batch_num = (i // 5) + 1
+                options.append(discord.SelectOption(
+                    label=f"🔱 Elite Roles (Batch {batch_num})", 
+                    value=f"elite_{i}", 
+                    description=f"Configure Elite Roles {i+1} to {min(i+5, len(elite_ids))}"
+                ))
+
         staff_ids = cfg.get("staff_role_ids", [])
         if staff_ids:
             for i in range(0, len(staff_ids), 5):
@@ -361,7 +433,13 @@ class PrefixCategorySelect(discord.ui.Select):
         target_roles: list[discord.Role] = []
         cat_label = "Role Tags"
 
-        if choice.startswith("staff_"):
+        if choice.startswith("elite_"):
+            offset = int(choice.split("_")[1])
+            cat_label = f"Elite Roles ({offset+1}-{offset+5})"
+            e_ids = self.cfg.get("elite_role_ids", [])[offset:offset+5]
+            target_roles = [self.guild.get_role(rid) for rid in e_ids if self.guild.get_role(rid)]
+
+        elif choice.startswith("staff_"):
             offset = int(choice.split("_")[1])
             cat_label = f"Staff Roles ({offset+1}-{offset+5})"
             s_ids = self.cfg.get("staff_role_ids", [])[offset:offset+5]
@@ -482,21 +560,22 @@ class RoleManager(commands.Cog):
         # ---------------------------------------------------------------------
         custom_prefix_role_id = cfg.get("custom_prefix_role_id")
         if custom_prefix_role_id and custom_prefix_role_id in user_role_ids:
-            # User holds Custom-Prefix role -> Do not touch their nickname!
             return
 
         prefixes = cfg.get("role_prefixes", {})
         if not prefixes:
             return
-
+        
+        elite_ids = cfg.get("elite_role_ids", [])
         staff_ids = cfg.get("staff_role_ids", [])
         rank_ids = cfg.get("rank_role_ids", [])
         recruit_id = cfg.get("recruit_role_id")
         basic_ids = cfg.get("basic_role_ids", [])
         visitor_ids = cfg.get("visitor_role_ids", [])
 
-        # Priority order for Tag Prefixes
+        # Priority order for Tag Prefixes (Elite > Staff > Rank > Recruit > Basic)
         priority_order = []
+        priority_order.extend(elite_ids)
         priority_order.extend(staff_ids)
         priority_order.extend(rank_ids)
         if recruit_id:
@@ -599,6 +678,13 @@ class RoleManager(commands.Cog):
 
         custom_prefix_role = guild.get_role(cfg.get("custom_prefix_role_id", 0))
         custom_prefix_str = custom_prefix_role.mention if custom_prefix_role else "`Not Configured`"
+        
+        elite_ids = cfg.get("elite_role_ids", [])
+        elite_roles = [guild.get_role(rid) for rid in elite_ids if guild.get_role(rid)]
+        elite_formatted = [
+            f"{r.mention} [`{clean_tag_display(prefixes.get(str(r.id)))}`]" for r in elite_roles
+        ]
+        elite_str = " ➔ ".join(elite_formatted) if elite_formatted else "`None Configured`"
 
         staff_ids = cfg.get("staff_role_ids", [])
         staff_roles = [guild.get_role(rid) for rid in staff_ids if guild.get_role(rid)]
@@ -616,7 +702,7 @@ class RoleManager(commands.Cog):
 
         bot_member = guild.me
         problematic_roles = []
-        all_configured_roles = staff_roles + rank_roles + ([recruit_role] if recruit_role else []) + ([member_role] if member_role else [])
+        all_configured_roles = elite_roles + staff_roles + rank_roles + ([recruit_role] if recruit_role else []) + ([member_role] if member_role else [])
         
         for r in all_configured_roles:
             if r and r.position >= bot_member.top_role.position:
@@ -639,7 +725,7 @@ class RoleManager(commands.Cog):
         embed = discord.Embed(
             title="📊 20R Staff, Membership & Rank System Rules",
             description=(
-                "This dashboard details how basic roles, staff permissions, "
+                "This dashboard details how basic roles, elite/staff permissions, "
                 "member progression, rank restrictions, and nickname tags operate automatically."
                 f"{hierarchy_warning}"
             ),
@@ -654,6 +740,7 @@ class RoleManager(commands.Cog):
                 f"• **Recruit Role:** {recruit_str}\n"
                 f"• **Member Requirement:** {member_str}\n"
                 f"• **Custom Prefix Bypass:** {custom_prefix_str}\n"
+                f"• **Elite Roles (Highest ➔ Lowest):** {elite_str}\n"
                 f"• **Staff Hierarchy (Highest ➔ Lowest):** {staff_str}\n"
                 f"• **Rank Hierarchy (Highest ➔ Lowest):** {ranks_str}"
             ),
@@ -664,12 +751,13 @@ class RoleManager(commands.Cog):
             name="🛠️ Staff Instructions: How to Change Server Roles",
             value=(
                 "Admins can configure or re-link any category of roles anytime using `/setup_rank_roles`:\n"
+                "• `elite_roles` — List top-tier prestigious roles (e.g. `@Vanguard @Elder`).\n"
+                "• `staff_roles` — List all staff roles (e.g. `@Moderator @Admin`).\n"
+                "• `rank_roles` — List all dynamic ranks (e.g. `@Rank I @Rank II ...`).\n"
                 "• `basic_roles` — Pass space or comma separated mentions (e.g. `@Visitor @Friend`).\n"
                 "• `recruit_role` — Select the role granted upon passing application.\n"
                 "• `member_role` — Select the required full member role (e.g. `@20R Member`).\n"
-                "• `custom_prefix_role` — Select the role that allows custom nicknames without bot override.\n"
-                "• `staff_roles` — List all staff roles (e.g. `@Moderator @Admin`).\n"
-                "• `rank_roles` — List all dynamic ranks (e.g. `@Rank I @Rank II ...`).\n\n"
+                "• `custom_prefix_role` — Select the role that allows custom nicknames without bot override.\n\n"
                 "*Note: You can update a single option while leaving others omitted—the bot will retain your existing settings!*"
             ),
             inline=False,
@@ -679,8 +767,8 @@ class RoleManager(commands.Cog):
             name="🚫 Incompatible & Mutually Exclusive Rules",
             value=(
                 f"• **Basic Roles Exclusivity:** {basic_rules_text}\n"
-                f"• **Member Requirement:** Holding any Rank or Staff role strictly enforces having {member_str}.\n"
-                f"• **Recruit Exclusivity:** Holding {recruit_str if recruit_role else 'Recruit'} strictly strips {member_str}, Rank, and Staff roles.\n"
+                f"• **Member Requirement:** Holding any Rank, Staff, or Elite role strictly enforces having {member_str}.\n"
+                f"• **Recruit Exclusivity:** Holding {recruit_str if recruit_role else 'Recruit'} strictly strips {member_str}, Rank, Staff, and Elite roles.\n"
                 f"• **Multiple Ranks:** Rank roles are mutually exclusive. Progression maintains a single active rank.\n"
                 f"• **Custom Prefix Override:** Members holding {custom_prefix_str} bypass prefix enforcement."
             ),
@@ -688,11 +776,10 @@ class RoleManager(commands.Cog):
         )
 
         embed.add_field(
-            name="🏷️ Nickname Tag System",
+            name="🏷️ Nickname Tag Priority",
             value=(
-                "Staff can click the button below to assign custom nickname tags for Staff, Rank, or Basic roles.\n"
-                "• Gaining a role automatically prepends its tag to the member's server nickname.\n"
-                "• Staff tags take priority over rank tags if a member holds both."
+                "Prefixes follow a strict priority order: **Elite > Staff > Rank > Recruit > Basic**.\n"
+                "Staff can click the button below to assign custom nickname tags to any of these role categories."
             ),
             inline=False,
         )
@@ -724,7 +811,7 @@ class RoleManager(commands.Cog):
         cfg = load_json(role.guild.id)
 
         modified = False
-        for key in ["basic_role_ids", "visitor_role_ids", "staff_role_ids", "rank_role_ids"]:
+        for key in ["basic_role_ids", "visitor_role_ids", "elite_role_ids", "staff_role_ids", "rank_role_ids"]:
             if role.id in cfg.get(key, []):
                 cfg[key].remove(role.id)
                 modified = True
@@ -781,6 +868,7 @@ class RoleManager(commands.Cog):
             recruit_role_id = cfg.get("recruit_role_id")
             member_role_id = cfg.get("member_role_id")
 
+            elite_role_ids = cfg.get("elite_role_ids", [])
             staff_role_ids = cfg.get("staff_role_ids", [])
             rank_role_ids = cfg.get("rank_role_ids", [])
 
@@ -796,6 +884,7 @@ class RoleManager(commands.Cog):
             gained_recruit = next((r for r in after.roles if r.id in added_role_ids and r.id == recruit_role_id), None)
             gained_rank = next((r for r in after.roles if r.id in added_role_ids and r.id in rank_role_ids), None)
             gained_staff = next((r for r in after.roles if r.id in added_role_ids and r.id in staff_role_ids), None)
+            gained_elite = next((r for r in after.roles if r.id in added_role_ids and r.id in elite_role_ids), None)
             gained_member = next((r for r in after.roles if r.id in added_role_ids and r.id == member_role_id), None)
             lost_member = member_role_id in removed_role_ids if member_role_id else False
 
@@ -804,7 +893,7 @@ class RoleManager(commands.Cog):
             # -----------------------------------------------------------------
             if gained_basic:
                 for r in after.roles:
-                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id == member_role_id or r.id == recruit_role_id:
+                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id in elite_role_ids or r.id == member_role_id or r.id == recruit_role_id:
                         if r not in roles_to_remove:
                             roles_to_remove.append(r)
 
@@ -818,7 +907,7 @@ class RoleManager(commands.Cog):
             # -----------------------------------------------------------------
             elif gained_recruit:
                 for r in after.roles:
-                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id == member_role_id or r.id in all_basic_ids:
+                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id in elite_role_ids or r.id == member_role_id or r.id in all_basic_ids:
                         if r.id != recruit_role_id and r not in roles_to_remove:
                             roles_to_remove.append(r)
 
@@ -859,9 +948,28 @@ class RoleManager(commands.Cog):
                     if r.id in staff_role_ids and r.id != gained_staff.id:
                         if r not in roles_to_remove:
                             roles_to_remove.append(r)
+                            
+            # -----------------------------------------------------------------
+            # BRANCH 5: GAINED ELITE ROLE (Vanguard / Elder)
+            # -----------------------------------------------------------------
+            elif gained_elite:
+                for r in after.roles:
+                    if r.id in all_basic_ids or r.id == recruit_role_id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
+
+                if member_role_id and member_role_id not in user_role_ids:
+                    m_role = guild.get_role(member_role_id)
+                    if m_role and m_role not in roles_to_add:
+                        roles_to_add.append(m_role)
+
+                for r in after.roles:
+                    if r.id in elite_role_ids and r.id != gained_elite.id:
+                        if r not in roles_to_remove:
+                            roles_to_remove.append(r)
 
             # -----------------------------------------------------------------
-            # BRANCH 5: GAINED MEMBER ROLE MANUALLY
+            # BRANCH 6: GAINED MEMBER ROLE MANUALLY
             # -----------------------------------------------------------------
             elif gained_member:
                 for r in after.roles:
@@ -870,11 +978,11 @@ class RoleManager(commands.Cog):
                             roles_to_remove.append(r)
 
             # -----------------------------------------------------------------
-            # BRANCH 6: MEMBER STATUS REMOVED (Full Demotion to Visitor)
+            # BRANCH 7: MEMBER STATUS REMOVED (Full Demotion to Visitor)
             # -----------------------------------------------------------------
             elif lost_member:
                 for r in after.roles:
-                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id in all_basic_ids or r.id == recruit_role_id:
+                    if r.id in rank_role_ids or r.id in staff_role_ids or r.id in elite_role_ids or r.id in all_basic_ids or r.id == recruit_role_id:
                         if r not in roles_to_remove:
                             roles_to_remove.append(r)
 
@@ -890,9 +998,10 @@ class RoleManager(commands.Cog):
             else:
                 active_ranks = [r for r in after.roles if r.id in rank_role_ids]
                 active_staff = [r for r in after.roles if r.id in staff_role_ids]
+                active_elite = [r for r in after.roles if r.id in elite_role_ids]
                 has_member_role = member_role_id and member_role_id in user_role_ids
 
-                if active_ranks or active_staff or has_member_role:
+                if active_ranks or active_staff or active_elite or has_member_role:
                     for r in after.roles:
                         if (r.id in all_basic_ids or r.id == recruit_role_id) and r not in roles_to_remove:
                             roles_to_remove.append(r)
@@ -946,7 +1055,7 @@ class RoleManager(commands.Cog):
 
     @app_commands.command(
         name="setup_rank_roles",
-        description="Configure dynamic lists of Basic, Recruit, Member, Custom Prefix, Staff, and Rank roles.",
+        description="Configure dynamic lists of Basic, Recruit, Member, Custom Prefix, Elite, Staff, and Rank roles.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_rank_roles(
@@ -956,6 +1065,7 @@ class RoleManager(commands.Cog):
         recruit_role: discord.Role = None,
         custom_prefix_role: discord.Role = None,
         basic_roles: str = None,
+        elite_roles: str = None,
         staff_roles: str = None,
         rank_roles: str = None,
     ):
@@ -976,6 +1086,10 @@ class RoleManager(commands.Cog):
             if member_role and member_role.id in parsed_basic_ids:
                 parsed_basic_ids.remove(member_role.id)
             guild_cfg["basic_role_ids"] = parsed_basic_ids
+
+        if elite_roles is not None:
+            parsed_elite_ids = parse_role_ids(guild, elite_roles)
+            guild_cfg["elite_role_ids"] = parsed_elite_ids
 
         if staff_roles is not None:
             parsed_staff_ids = parse_role_ids(guild, staff_roles)
@@ -1004,6 +1118,11 @@ class RoleManager(commands.Cog):
             if guild_cfg.get("custom_prefix_role_id")
             else "`Not Set`"
         )
+        e_str = (
+            ", ".join([f"<@&{rid}>" for rid in guild_cfg.get("elite_role_ids", [])])
+            if guild_cfg.get("elite_role_ids")
+            else "`Not Set`"
+        )
         s_str = (
             ", ".join([f"<@&{rid}>" for rid in guild_cfg.get("staff_role_ids", [])])
             if guild_cfg.get("staff_role_ids")
@@ -1026,6 +1145,7 @@ class RoleManager(commands.Cog):
             f"• **Recruit Role:** {rec_str}\n"
             f"• **Member Requirement Role:** {m_str}\n"
             f"• **Custom Prefix Bypass Role:** {c_str}\n"
+            f"• **Elite Roles:** {e_str}\n"
             f"• **Staff Roles:** {s_str}\n"
             f"• **Rank Roles:** {ranks_str}",
             ephemeral=True,
