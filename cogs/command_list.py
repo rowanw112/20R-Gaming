@@ -260,31 +260,19 @@ class CommandList(commands.Cog):
         description="Registers a channel to host the automatically updating command documentation.",
     )
     @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(channel="The text channel to post the command list in")
+    @app_commands.describe(channel="The text channel to post the command list in (Defaults to current channel)")
     async def setup_command_list(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
-        target_channel = channel
+        target_channel = channel or interaction.channel
         
-        if not target_channel:
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=False,
-                ),
-                guild.me: discord.PermissionOverwrite(
-                    view_channel=True,
-                    send_messages=True,
-                    embed_links=True,
-                    manage_messages=True,
-                ),
-            }
-            target_channel = await guild.create_text_channel(
-                name="📜-command-list",
-                overwrites=overwrites,
-                reason="Command Documentation Channel Setup",
+        if not isinstance(target_channel, discord.TextChannel):
+            await interaction.followup.send(
+                "❌ The command list must be placed in a standard text channel.",
+                ephemeral=True,
             )
+            return
             
         cfg = load_config(guild.id)
         cfg["channel_id"] = target_channel.id
