@@ -638,7 +638,7 @@ class DynamicVoice(commands.Cog):
             except (discord.Forbidden, discord.HTTPException) as e:
                 logger.error(f"[DynamicVoice] Failed to create voice channel for {member.display_name}: {e}")
 
-        if before.channel and str(before.channel.id) in active_channels:
+        if before.channel and before.channel != after.channel and str(before.channel.id) in active_channels:
             left_channel = before.channel
             channel_data = active_channels[str(left_channel.id)]
             
