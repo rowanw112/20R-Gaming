@@ -36,32 +36,47 @@ def save_config(guild_id: int, data: dict):
 
 
 # -------------------------------------------------------------------------
-# INTERACTIVE PROMPT VIEW FOR NEW THREADS
+# PERSISTENT PROMPT VIEW FOR THREADS
 # -------------------------------------------------------------------------
 class ThreadKeepAlivePromptView(discord.ui.View):
-    def __init__(self, creator_id: int | None):
-        super().__init__(timeout=300)  # 5 minutes before auto-dismiss
-        self.creator_id = creator_id
+    def __init__(self):
+        # timeout=None ensures the buttons never expire
+        super().__init__(timeout=None)
 
     def _can_interact(self, interaction: discord.Interaction) -> bool:
+        """Restricts button clicks to Staff or the Thread Creator."""
         if interaction.user.guild_permissions.administrator:
             return True
         if interaction.user.guild_permissions.manage_threads:
             return True
-        if self.creator_id and interaction.user.id == self.creator_id:
+        if isinstance(interaction.channel, discord.Thread) and interaction.user.id == interaction.channel.owner_id:
             return True
         return False
 
+    def build_embed(self, is_kept_alive: bool) -> discord.Embed:
+        embed = discord.Embed(
+            title="📌 Thread Visibility Settings",
+            description=(
+                "Would you like the bot to keep this thread permanently active?\n"
+                "• **Keep Thread Alive:** Automatically unarchives and bumps this thread so it never hides.\n"
+                "• **Leave as Default:** Standard Discord behavior (archives on inactivity)."
+            ),
+            color=discord.Color.green() if is_kept_alive else discord.Color.light_grey()
+        )
+        status = "🟢 **Keep Alive (Auto-Bumped)**" if is_kept_alive else "🔴 **Default (Archives Normally)**"
+        embed.add_field(name="Current Status", value=status, inline=False)
+        embed.set_footer(text="Only staff or the thread creator can change this setting.")
+        return embed
+
     @discord.ui.button(
-        label="Keep Thread Alive (Auto-Bump)",
+        label="Keep Thread Alive",
         style=discord.ButtonStyle.success,
-        emoji="📌",
         custom_id="tk_keep_alive"
     )
     async def keep_alive(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._can_interact(interaction):
             await interaction.response.send_message(
-                "❌ Only the thread creator or staff members can configure this.", ephemeral=True
+                "❌ Only the thread creator or staff members can change this status.", ephemeral=True
             )
             return
 
@@ -84,42 +99,34 @@ class ThreadKeepAlivePromptView(discord.ui.View):
         except (discord.Forbidden, discord.HTTPException):
             pass
 
-        await interaction.response.edit_message(
-            content=f"📌 **Keep-Alive Activated:** This thread will now stay active and will not archive automatically.",
-            view=None
-        )
-        self.stop()
-        
-        # Clean up confirmation message after 8 seconds
-        await asyncio.sleep(8)
-        try:
-            await interaction.delete_original_response()
-        except discord.HTTPException:
-            pass
+        await interaction.response.edit_message(embed=self.build_embed(True), view=self)
 
     @discord.ui.button(
         label="Leave as Default",
         style=discord.ButtonStyle.secondary,
-        emoji="✖️",
         custom_id="tk_leave_default"
     )
     async def leave_default(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._can_interact(interaction):
             await interaction.response.send_message(
-                "❌ Only the thread creator or staff members can configure this.", ephemeral=True
+                "❌ Only the thread creator or staff members can change this status.", ephemeral=True
             )
             return
 
-        await interaction.response.defer()
-        try:
-            await interaction.delete_original_response()
-        except discord.HTTPException:
-            pass
-        self.stop()
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            return
 
-    async def on_timeout(self):
-        # Clean up view silently on timeout
-        self.stop()
+        guild = interaction.guild
+        cfg = load_config(guild.id)
+        
+        keep_alive_ids = set(cfg.get("keep_alive_thread_ids", []))
+        if thread.id in keep_alive_ids:
+            keep_alive_ids.remove(thread.id)
+            cfg["keep_alive_thread_ids"] = list(keep_alive_ids)
+            save_config(guild.id, cfg)
+
+        await interaction.response.edit_message(embed=self.build_embed(False), view=self)
 
 
 # -------------------------------------------------------------------------
@@ -130,6 +137,10 @@ class ThreadKeeper(commands.Cog):
         self.bot = bot
         self.sweep_tracked_threads.start()
         self.bump_inactive_threads.start()
+
+    async def cog_load(self):
+        # Register the persistent view so buttons work across bot restarts
+        self.bot.add_view(ThreadKeepAlivePromptView())
 
     def cog_unload(self):
         self.sweep_tracked_threads.cancel()
@@ -160,7 +171,7 @@ class ThreadKeeper(commands.Cog):
     # -------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
-        """Fires when a thread is created; prompts the creator to opt-in to auto keep-alive."""
+        """Fires when a thread is created; posts the pinned keep-alive status panel."""
         await asyncio.sleep(1.5)  # Yield to allow bot commands to finish initial setups
 
         guild = thread.guild
@@ -175,19 +186,21 @@ class ThreadKeeper(commands.Cog):
         if thread.id in tracked_ids:
             return
 
-        # 2. Post the interactive opt-in prompt
-        creator_mention = f"<@{thread.owner_id}>" if thread.owner_id else "Thread Creator"
-        view = ThreadKeepAlivePromptView(creator_id=thread.owner_id)
+        # 2. Post the interactive control panel and pin it
+        view = ThreadKeepAlivePromptView()
+        embed = view.build_embed(is_kept_alive=False)
 
         try:
-            prompt_msg = await thread.send(
-                content=(
-                    f"👋 {creator_mention}, would you like to keep this thread permanently active?\n"
-                    f"• **Keep Thread Alive:** Automatically unarchives and bumps this thread so it never hides.\n"
-                    f"• **Leave as Default:** Standard Discord behavior (archives on inactivity)."
-                ),
-                view=view
-            )
+            msg = await thread.send(content=f"<@{thread.owner_id}>", embed=embed, view=view)
+            await msg.pin(reason="ThreadKeeper Status Panel")
+            
+            # Instantly delete the system message "Bot pinned a message" to keep chat clean
+            await asyncio.sleep(0.5)
+            async for sys_msg in thread.history(limit=5):
+                if sys_msg.type == discord.MessageType.pins_add and sys_msg.author == self.bot.user:
+                    await sys_msg.delete()
+                    break
+                    
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -321,40 +334,6 @@ class ThreadKeeper(commands.Cog):
     # -------------------------------------------------------------------------
     # 5. MANAGEMENT COMMANDS
     # -------------------------------------------------------------------------
-    @app_commands.command(
-        name="toggle_thread_keep_alive",
-        description="Toggle auto keep-alive tracking for a specific thread."
-    )
-    @app_commands.checks.has_permissions(manage_threads=True)
-    async def toggle_thread_keep_alive(self, interaction: discord.Interaction, target_thread: discord.Thread = None):
-        await interaction.response.defer(ephemeral=True)
-        thread = target_thread or interaction.channel
-
-        if not isinstance(thread, discord.Thread):
-            await interaction.followup.send("❌ This command must be used in or targeted at a thread.", ephemeral=True)
-            return
-
-        cfg = load_config(interaction.guild.id)
-        manual_ids = set(cfg.get("keep_alive_thread_ids", []))
-
-        if thread.id in manual_ids:
-            manual_ids.remove(thread.id)
-            cfg["keep_alive_thread_ids"] = list(manual_ids)
-            save_config(interaction.guild.id, cfg)
-            await interaction.followup.send(f"❌ Removed {thread.mention} from auto keep-alive tracking.", ephemeral=True)
-        else:
-            manual_ids.add(thread.id)
-            cfg["keep_alive_thread_ids"] = list(manual_ids)
-            save_config(interaction.guild.id, cfg)
-            
-            try:
-                if thread.auto_archive_duration != 10080:
-                    await thread.edit(auto_archive_duration=10080, reason="ThreadKeeper: Manual toggle")
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-
-            await interaction.followup.send(f"✅ Added {thread.mention} to auto keep-alive tracking!", ephemeral=True)
-
     @app_commands.command(
         name="test_thread_bump",
         description="Force a silent visibility bump and enforce 1-week inactivity on a thread."
