@@ -2,19 +2,14 @@ import asyncio
 import json
 import logging
 import os
-import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from datetime import datetime, timezone
 
 from core.database import load_thread_mappings
 
 logger = logging.getLogger(__name__)
-
-# Pattern to match threads starting with numbers (e.g. "1234-ticket-name" or "0012 - support")
-RE_TICKET_PREFIX = re.compile(r"^\d+")
 
 
 def get_config_path(guild_id: int) -> str:
@@ -29,7 +24,7 @@ def load_config(guild_id: int) -> dict:
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception as e:
+        except Exception:
             pass
     return {}
 
@@ -40,302 +35,352 @@ def save_config(guild_id: int, data: dict):
         json.dump(data, f, indent=4)
 
 
+# -------------------------------------------------------------------------
+# INTERACTIVE PROMPT VIEW FOR NEW THREADS
+# -------------------------------------------------------------------------
+class ThreadKeepAlivePromptView(discord.ui.View):
+    def __init__(self, creator_id: int | None):
+        super().__init__(timeout=300)  # 5 minutes before auto-dismiss
+        self.creator_id = creator_id
+
+    def _can_interact(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.guild_permissions.administrator:
+            return True
+        if interaction.user.guild_permissions.manage_threads:
+            return True
+        if self.creator_id and interaction.user.id == self.creator_id:
+            return True
+        return False
+
+    @discord.ui.button(
+        label="Keep Thread Alive (Auto-Bump)",
+        style=discord.ButtonStyle.success,
+        emoji="📌",
+        custom_id="tk_keep_alive"
+    )
+    async def keep_alive(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._can_interact(interaction):
+            await interaction.response.send_message(
+                "❌ Only the thread creator or staff members can configure this.", ephemeral=True
+            )
+            return
+
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            return
+
+        guild = interaction.guild
+        cfg = load_config(guild.id)
+        
+        keep_alive_ids = set(cfg.get("keep_alive_thread_ids", []))
+        keep_alive_ids.add(thread.id)
+        cfg["keep_alive_thread_ids"] = list(keep_alive_ids)
+        save_config(guild.id, cfg)
+
+        # Enforce max visibility (1 week)
+        try:
+            if thread.auto_archive_duration != 10080:
+                await thread.edit(auto_archive_duration=10080, reason="ThreadKeeper: Opted into Keep-Alive")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+        await interaction.response.edit_message(
+            content=f"📌 **Keep-Alive Activated:** This thread will now stay active and will not archive automatically.",
+            view=None
+        )
+        self.stop()
+        
+        # Clean up confirmation message after 8 seconds
+        await asyncio.sleep(8)
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(
+        label="Leave as Default",
+        style=discord.ButtonStyle.secondary,
+        emoji="✖️",
+        custom_id="tk_leave_default"
+    )
+    async def leave_default(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._can_interact(interaction):
+            await interaction.response.send_message(
+                "❌ Only the thread creator or staff members can configure this.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
+        self.stop()
+
+    async def on_timeout(self):
+        # Clean up view silently on timeout
+        self.stop()
+
+
+# -------------------------------------------------------------------------
+# THREAD KEEPER COG
+# -------------------------------------------------------------------------
 class ThreadKeeper(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.sweep_archived_threads.start()
+        self.sweep_tracked_threads.start()
         self.bump_inactive_threads.start()
 
     def cog_unload(self):
-        self.sweep_archived_threads.cancel()
+        self.sweep_tracked_threads.cancel()
         self.bump_inactive_threads.cancel()
 
-    def is_exempt_from_unarchive(self, thread: discord.Thread) -> bool:
-        """Returns True if the thread should NOT be unarchived."""
-        # Respect locked threads
-        if thread.locked:
-            return True
-
-        # Exclude threads if the title explicitly contains 'archive'
-        if "archive" in thread.name.lower():
-            return True
-
-        return False
-
-    async def notify_unarchive_if_needed(
-        self, thread: discord.Thread, is_linked_to_role: bool
-    ):
-        """Sends an informational message to unarchived threads, UNLESS it's linked to a role
-        or starts with a ticket ID number.
-        """
-        starts_with_number = bool(RE_TICKET_PREFIX.match(thread.name.strip()))
-
-        # Suppress message if linked to a role OR if it starts with numbers (ticket format)
-        if is_linked_to_role or starts_with_number:
-            return
-
-        try:
-            await thread.send(
-                "📌 **Thread Auto-Unarchived**\n"
-                "This thread was automatically unarchived to keep it active. "
-                "If you want this thread to remain archived, please rename it to include **`archive`** in the thread title."
-            )
-        except discord.NotFound:
-            pass  # Thread or channel was deleted mid-operation
-        except (discord.Forbidden, discord.HTTPException) as e:
-            logger.warning(
-                f"Could not send unarchive notice in {thread.name}: {e}"
-            )
-
-    async def _unarchive_guild_threads(self, guild: discord.Guild, context_reason: str):
-        """Sweeps and unarchives valid inactive threads across text channels in the guild."""
+    def get_tracked_thread_ids(self, guild: discord.Guild) -> set[int]:
+        """Returns the union of role-mapped threads and manually opted-in keep-alive threads."""
         mappings = load_thread_mappings(guild.id)
-        
-        # Safe extraction ensuring item is a dictionary before calling .get()
-        mapped_role_thread_ids = {
-            item.get("thread_id")
-            for item in mappings
-            if isinstance(item, dict) and item.get("thread_id")
+        role_mapped_ids = {
+            m.get("thread_id")
+            for m in mappings
+            if isinstance(m, dict) and m.get("thread_id")
         }
 
-        for channel in guild.text_channels:
-            # Check if bot has permissions to read/manage threads in this channel
-            permissions = channel.permissions_for(guild.me)
-            if not permissions.read_message_history or not permissions.manage_threads:
-                continue
+        cfg = load_config(guild.id)
+        manual_ids = set(cfg.get("keep_alive_thread_ids", []))
 
-            try:
-                # 1. Private Archived Threads
-                async for thread in channel.archived_threads(private=True, limit=None):
-                    if self.is_exempt_from_unarchive(thread):
-                        continue
+        return role_mapped_ids.union(manual_ids)
 
-                    await thread.edit(
-                        archived=False, reason=f"ThreadKeeper: {context_reason}"
-                    )
-                    logger.info(
-                        f"🔓 [{context_reason}] Unarchived private thread '{thread.name}' in #{channel.name}"
-                    )
-
-                    is_linked = thread.id in mapped_role_thread_ids
-                    await self.notify_unarchive_if_needed(thread, is_linked)
-
-                    # Rate Limit Safety
-                    await asyncio.sleep(1.0)
-
-                # 2. Public Archived Threads
-                async for thread in channel.archived_threads(private=False, limit=None):
-                    if self.is_exempt_from_unarchive(thread):
-                        continue
-
-                    await thread.edit(
-                        archived=False, reason=f"ThreadKeeper: {context_reason}"
-                    )
-                    logger.info(
-                        f"🔓 [{context_reason}] Unarchived public thread '{thread.name}' in #{channel.name}"
-                    )
-
-                    is_linked = thread.id in mapped_role_thread_ids
-                    await self.notify_unarchive_if_needed(thread, is_linked)
-
-                    # Rate Limit Safety
-                    await asyncio.sleep(1.0)
-
-            except discord.NotFound:
-                # Channel or thread was deleted during teardown/sweep; ignore cleanly
-                pass
-            except (discord.Forbidden, discord.HTTPException) as e:
-                logger.error(f"Error checking archived threads in #{channel.name}: {e}")
+    def is_exempt(self, thread: discord.Thread) -> bool:
+        """Returns True if thread is explicitly locked or tagged with 'archive'."""
+        if thread.locked or "archive" in thread.name.lower():
+            return True
+        return False
 
     # -------------------------------------------------------------------------
-    # 1. BOT STARTUP AUDIT
+    # 1. NEW THREAD LISTENER (INTERACTIVE PROMPT)
     # -------------------------------------------------------------------------
     @commands.Cog.listener()
-    async def on_ready(self):
-        """Fires when the bot logs in and checks for inactive threads."""
-        logger.info(
-            "🔍 Bot online — auditing inactive/archived threads across all guilds..."
-        )
-        for guild in self.bot.guilds:
-            await self._unarchive_guild_threads(
-                guild, context_reason="Startup Audit"
+    async def on_thread_create(self, thread: discord.Thread):
+        """Fires when a thread is created; prompts the creator to opt-in to auto keep-alive."""
+        await asyncio.sleep(1.5)  # Yield to allow bot commands to finish initial setups
+
+        guild = thread.guild
+        if not guild:
+            return
+
+        # 1. If created by the bot or already mapped to a role, skip prompt (handled automatically)
+        if thread.owner_id == self.bot.user.id:
+            return
+
+        tracked_ids = self.get_tracked_thread_ids(guild)
+        if thread.id in tracked_ids:
+            return
+
+        # 2. Post the interactive opt-in prompt
+        creator_mention = f"<@{thread.owner_id}>" if thread.owner_id else "Thread Creator"
+        view = ThreadKeepAlivePromptView(creator_id=thread.owner_id)
+
+        try:
+            prompt_msg = await thread.send(
+                content=(
+                    f"👋 {creator_mention}, would you like to keep this thread permanently active?\n"
+                    f"• **Keep Thread Alive:** Automatically unarchives and bumps this thread so it never hides.\n"
+                    f"• **Leave as Default:** Standard Discord behavior (archives on inactivity)."
+                ),
+                view=view
             )
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     # -------------------------------------------------------------------------
-    # 2. REAL-TIME EVENT LISTENER
+    # 2. REAL-TIME UNARCHIVE EVENT LISTENER
     # -------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_thread_update(self, before: discord.Thread, after: discord.Thread):
-        """Triggers immediately when a thread is archived in real-time."""
+        """Immediately unarchives tracked threads if they become archived."""
         if not before.archived and after.archived:
-            if self.is_exempt_from_unarchive(after):
+            guild = after.guild
+            if not guild:
+                return
+
+            tracked_ids = self.get_tracked_thread_ids(guild)
+            if after.id not in tracked_ids:
+                return  # Leave untracked threads archived
+
+            if self.is_exempt(after):
                 return
 
             try:
-                await after.edit(
-                    archived=False,
-                    reason="ThreadKeeper: Real-time auto-unarchive",
-                )
-                logger.info(
-                    f"🔓 Instantly unarchived thread: {after.name} ({after.id})"
-                )
-
-                mappings = load_thread_mappings(after.guild.id)
-                mapped_role_thread_ids = {
-                    item.get("thread_id")
-                    for item in mappings
-                    if isinstance(item, dict) and item.get("thread_id")
-                }
-                is_linked = after.id in mapped_role_thread_ids
-
-                await self.notify_unarchive_if_needed(after, is_linked)
-
-            except discord.NotFound:
-                pass  # Thread was deleted
-            except discord.Forbidden:
-                logger.warning(
-                    f"⚠️ Lacking permissions to unarchive thread {after.name}"
-                )
-            except discord.HTTPException as e:
-                logger.error(f"Failed to unarchive thread {after.name}: {e}")
+                await after.edit(archived=False, reason="ThreadKeeper: Auto-keep alive tracked thread")
+                logger.info(f"🔓 Instantly unarchived tracked thread: #{after.name} ({after.id}) in '{guild.name}'")
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                logger.warning(f"Could not auto-unarchive tracked thread #{after.name}: {e}")
 
     # -------------------------------------------------------------------------
-    # 3. PERIODIC CATCH-UP TASK LOOP (Runs Hourly)
+    # 3. PERIODIC TRACKED-THREAD SWEEP (Runs Hourly)
     # -------------------------------------------------------------------------
     @tasks.loop(hours=1)
-    async def sweep_archived_threads(self):
-        """Runs hourly as a fail-safe sweep for missed events."""
-        await self.bot.wait_until_ready()
+    async def sweep_tracked_threads(self):
+        """Checks ONLY tracked keep-alive threads to ensure none were missed."""
         for guild in self.bot.guilds:
-            await self._unarchive_guild_threads(
-                guild, context_reason="Hourly Sweep"
-            )
+            tracked_ids = self.get_tracked_thread_ids(guild)
+            if not tracked_ids:
+                continue
 
-    @sweep_archived_threads.before_loop
-    async def before_sweep(self):
-        await self.bot.wait_until_ready()
-
-    # -------------------------------------------------------------------------
-    # 4. VISUAL BUMP TASK LOOP (Runs every 12 hours)
-    # -------------------------------------------------------------------------
-    @tasks.loop(hours=12)
-    async def bump_inactive_threads(self):
-        """Maintains thread visibility by enforcing 1-week auto-archive and bumping just before expiration."""
-        await self.bot.wait_until_ready()
-        now = discord.utils.utcnow()
-        # 7 days is Discord's max. We bump at 6.5 days to ensure we beat the auto-hide timer safely.
-        bump_threshold = now - timedelta(days=6, hours=12)
-
-        for guild in self.bot.guilds:
-            mappings = load_thread_mappings(guild.id)
-            mapped_role_thread_ids = {
-                item.get("thread_id")
-                for item in mappings
-                if isinstance(item, dict) and item.get("thread_id")
-            }
-
-            # Load persistent bump ledger
-            configs = load_config(guild.id)
-            if "global_last_bumps" not in configs:
-                configs["global_last_bumps"] = {}
-                
-            bumps_made = False
-
-            for thread_id in mapped_role_thread_ids:
+            for thread_id in list(tracked_ids):
                 thread = guild.get_thread(thread_id)
                 if not thread:
                     try:
                         thread = await guild.fetch_channel(thread_id)
                     except (discord.NotFound, discord.HTTPException, discord.ClientException):
                         continue
-                        
-                if not isinstance(thread, discord.Thread):
-                    continue
-                    
-                # Skip locked or specifically exempt threads
-                if self.is_exempt_from_unarchive(thread):
+
+                if not isinstance(thread, discord.Thread) or self.is_exempt(thread):
                     continue
 
-                # 1. ENFORCE 1-WEEK "HIDE AFTER INACTIVITY" (10080 minutes)
-                # This ensures any automatically created threads are stretched to the max UI lifespan
-                if thread.auto_archive_duration != 10080:
+                if thread.archived:
                     try:
-                        await thread.edit(
-                            auto_archive_duration=10080, 
-                            reason="ThreadKeeper: Enforcing 1-week visibility limit"
-                        )
-                        logger.info(f"⚙️ Updated '{thread.name}' Hide After Inactivity to 1 Week.")
+                        await thread.edit(archived=False, reason="ThreadKeeper: Hourly sweep auto-unarchive")
+                        logger.info(f"🔓 [Sweep] Unarchived tracked thread '{thread.name}' in {guild.name}")
+                        await asyncio.sleep(1.0)
                     except (discord.Forbidden, discord.HTTPException):
                         pass
-                
-                # 2. CHECK ACTIVITY FOR 1-WEEK BUMP
-                # Check last actual Discord message time
+
+    @sweep_tracked_threads.before_loop
+    async def before_sweep(self):
+        await self.bot.wait_until_ready()
+        await asyncio.sleep(300)  # Wait 5 minutes after startup before running first sweep
+
+    # -------------------------------------------------------------------------
+    # 4. VISUAL BUMP LOOP (Runs every 12 hours)
+    # -------------------------------------------------------------------------
+    @tasks.loop(hours=12)
+    async def bump_inactive_threads(self):
+        """Maintains UI visibility by bumping tracked threads before the 1-week timeout."""
+        now = discord.utils.utcnow()
+        bump_threshold = now - timedelta(days=6, hours=12)
+
+        for guild in self.bot.guilds:
+            tracked_ids = self.get_tracked_thread_ids(guild)
+            if not tracked_ids:
+                continue
+
+            cfg = load_config(guild.id)
+            if "global_last_bumps" not in cfg:
+                cfg["global_last_bumps"] = {}
+
+            bumps_made = False
+
+            for thread_id in list(tracked_ids):
+                thread = guild.get_thread(thread_id)
+                if not thread:
+                    try:
+                        thread = await guild.fetch_channel(thread_id)
+                    except (discord.NotFound, discord.HTTPException, discord.ClientException):
+                        continue
+
+                if not isinstance(thread, discord.Thread) or self.is_exempt(thread):
+                    continue
+
+                # 1. Enforce 1-Week hide timer
+                if thread.auto_archive_duration != 10080:
+                    try:
+                        await thread.edit(auto_archive_duration=10080, reason="ThreadKeeper: Enforce 1-week visibility")
+                    except (discord.Forbidden, discord.HTTPException):
+                        pass
+
+                # 2. Check if a bump is needed
                 last_msg_time = None
                 if thread.last_message_id:
                     last_msg_time = discord.utils.snowflake_time(thread.last_message_id)
-                    
-                # Check our internal bump ledger
-                last_bump_timestamp = configs["global_last_bumps"].get(str(thread.id))
+
+                last_bump_timestamp = cfg["global_last_bumps"].get(str(thread.id))
                 last_bump_time = datetime.fromtimestamp(last_bump_timestamp, timezone.utc) if last_bump_timestamp else None
-                
-                # We ONLY bump if BOTH the last real message AND the last internal bump were > 6.5 days ago
-                needs_bump_for_msg = not last_msg_time or last_msg_time < bump_threshold
-                needs_bump_for_record = not last_bump_time or last_bump_time < bump_threshold
-                
-                if needs_bump_for_msg and needs_bump_for_record:
+
+                needs_bump_msg = not last_msg_time or last_msg_time < bump_threshold
+                needs_bump_rec = not last_bump_time or last_bump_time < bump_threshold
+
+                if needs_bump_msg and needs_bump_rec:
                     try:
-                        # Send a silent message so it doesn't trigger push notifications, then delete it
                         msg = await thread.send("♻️ *Automated visibility bump...*", silent=True)
                         await msg.delete()
-                        
-                        # Log the bump in our persistent tracker
-                        configs["global_last_bumps"][str(thread.id)] = now.timestamp()
+
+                        cfg["global_last_bumps"][str(thread.id)] = now.timestamp()
                         bumps_made = True
-                        
-                        logger.info(f"♻️ Bumped inactive mapped thread to maintain 1-week UI visibility: {thread.name}")
-                        await asyncio.sleep(1.5) # Rate limit safety
+                        logger.info(f"♻️ Bumped tracked thread '{thread.name}' in {guild.name}")
+                        await asyncio.sleep(1.5)
                     except (discord.Forbidden, discord.HTTPException, discord.NotFound):
                         pass
 
-            # Save config only if we actually performed bumps for this guild
             if bumps_made:
-                save_config(guild.id, configs)
+                save_config(guild.id, cfg)
+
+    @bump_inactive_threads.before_loop
+    async def before_bump(self):
+        await self.bot.wait_until_ready()
 
     # -------------------------------------------------------------------------
-    # 5. TESTING COMMAND
+    # 5. MANAGEMENT COMMANDS
     # -------------------------------------------------------------------------
+    @app_commands.command(
+        name="toggle_thread_keep_alive",
+        description="Toggle auto keep-alive tracking for a specific thread."
+    )
+    @app_commands.checks.has_permissions(manage_threads=True)
+    async def toggle_thread_keep_alive(self, interaction: discord.Interaction, target_thread: discord.Thread = None):
+        await interaction.response.defer(ephemeral=True)
+        thread = target_thread or interaction.channel
+
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ This command must be used in or targeted at a thread.", ephemeral=True)
+            return
+
+        cfg = load_config(interaction.guild.id)
+        manual_ids = set(cfg.get("keep_alive_thread_ids", []))
+
+        if thread.id in manual_ids:
+            manual_ids.remove(thread.id)
+            cfg["keep_alive_thread_ids"] = list(manual_ids)
+            save_config(interaction.guild.id, cfg)
+            await interaction.followup.send(f"❌ Removed {thread.mention} from auto keep-alive tracking.", ephemeral=True)
+        else:
+            manual_ids.add(thread.id)
+            cfg["keep_alive_thread_ids"] = list(manual_ids)
+            save_config(interaction.guild.id, cfg)
+            
+            try:
+                if thread.auto_archive_duration != 10080:
+                    await thread.edit(auto_archive_duration=10080, reason="ThreadKeeper: Manual toggle")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+
+            await interaction.followup.send(f"✅ Added {thread.mention} to auto keep-alive tracking!", ephemeral=True)
+
     @app_commands.command(
         name="test_thread_bump",
         description="Force a silent visibility bump and enforce 1-week inactivity on a thread."
     )
     @app_commands.checks.has_permissions(manage_threads=True)
-    async def test_thread_bump(self, interaction: discord.Interaction, target_thread: discord.Thread):
+    async def test_thread_bump(self, interaction: discord.Interaction, target_thread: discord.Thread = None):
         await interaction.response.defer(ephemeral=True)
-        
-        if self.is_exempt_from_unarchive(target_thread):
-            await interaction.followup.send("⚠️ This thread is marked as exempt (locked or archived).", ephemeral=True)
+        thread = target_thread or interaction.channel
+
+        if not isinstance(thread, discord.Thread):
+            await interaction.followup.send("❌ Target must be a thread.", ephemeral=True)
             return
 
         try:
-            # 1. Enforce the 1-week inactivity setting
-            if target_thread.auto_archive_duration != 10080:
-                await target_thread.edit(
-                    auto_archive_duration=10080, 
-                    reason="ThreadKeeper: Manual test enforcing 1-week limit"
-                )
-                
-            # 2. Execute the silent UI bump
-            msg = await target_thread.send("♻️ *Automated visibility bump test...*", silent=True)
+            if thread.auto_archive_duration != 10080:
+                await thread.edit(auto_archive_duration=10080, reason="ThreadKeeper: Test bump")
+
+            msg = await thread.send("♻️ *Automated visibility bump test...*", silent=True)
             await msg.delete()
-            
-            await interaction.followup.send(
-                f"✅ **Success!** {target_thread.mention} was bumped and locked to **1-Week** inactivity.", 
-                ephemeral=True
-            )
+
+            await interaction.followup.send(f"✅ Bumped {thread.mention} and enforced 1-week visibility.", ephemeral=True)
         except discord.Forbidden:
-            await interaction.followup.send("❌ Missing permissions to edit or send messages in that thread.", ephemeral=True)
+            await interaction.followup.send("❌ Missing permissions in that thread.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ Error bumping thread: {e}", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ThreadKeeper(bot))
