@@ -1056,6 +1056,88 @@ class RoleManager(commands.Cog):
         finally:
             self._processing_users.remove(after.id)
 
+
+    @app_commands.command(
+        name="mass_visitor_reset",
+        description="One-time cleanup: Demotes stuck Members, current Recruits, and unassigned users to Visitor.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def mass_visitor_reset(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        cfg = load_json(guild.id)
+
+        visitor_ids = cfg.get("visitor_role_ids", [])
+        if not visitor_ids:
+            return await interaction.followup.send("❌ No Visitor role configured! Please run `/setup_rank_roles` first.", ephemeral=True)
+            
+        target_visitor_role = guild.get_role(visitor_ids[0])
+        if not target_visitor_role:
+            return await interaction.followup.send("❌ The configured Visitor role could not be found in the server.", ephemeral=True)
+
+        member_role_id = cfg.get("member_role_id")
+        recruit_role_id = cfg.get("recruit_role_id")
+        rank_ids = cfg.get("rank_role_ids", [])
+        basic_ids = cfg.get("basic_role_ids", [])
+        
+        # Combine all mapped roles to check for completely unassigned users
+        all_mapped_ids = set(visitor_ids + basic_ids + rank_ids + cfg.get("staff_role_ids", []) + cfg.get("elite_role_ids", []))
+        if member_role_id: all_mapped_ids.add(member_role_id)
+        if recruit_role_id: all_mapped_ids.add(recruit_role_id)
+
+        changes = 0
+        
+        for member in guild.members:
+            if member.bot: 
+                continue
+            
+            user_roles = {r.id for r in member.roles}
+            needs_visitor = False
+            roles_to_remove = []
+
+            has_member = member_role_id in user_roles
+            has_recruit = recruit_role_id in user_roles
+            has_rank = any(r_id in user_roles for r_id in rank_ids)
+            
+            # Condition 1: Has 20R Member, but NO Recruit and NO Rank
+            if has_member and not has_recruit and not has_rank:
+                needs_visitor = True
+                roles_to_remove.append(guild.get_role(member_role_id))
+                
+            # Condition 2: Is a current Recruit
+            elif has_recruit:
+                needs_visitor = True
+                roles_to_remove.append(guild.get_role(recruit_role_id))
+                # Strip member role too if they somehow have both
+                if has_member: 
+                    roles_to_remove.append(guild.get_role(member_role_id))
+                    
+            # Condition 3: Missing basic roles, member, recruit, ranks, or staff (completely unassigned)
+            elif not any(r_id in user_roles for r_id in all_mapped_ids):
+                needs_visitor = True
+                
+            # Execution for this member
+            if needs_visitor:
+                roles_to_add = [target_visitor_role] if target_visitor_role.id not in user_roles else []
+                valid_removals = [r for r in roles_to_remove if r is not None]
+                
+                if roles_to_add or valid_removals:
+                    try:
+                        if roles_to_add:
+                            await member.add_roles(*roles_to_add, reason="Mass Visitor Reset: Unassigned/Recruit/Stuck Member")
+                        if valid_removals:
+                            await member.remove_roles(*valid_removals, reason="Mass Visitor Reset")
+                        
+                        changes += 1
+                        await asyncio.sleep(0.05) # Prevents Discord API rate limits
+                    except discord.HTTPException as e:
+                        logger.error(f"[MassReset] Failed on {member.display_name}: {e}")
+        
+        await interaction.followup.send(
+            f"✅ **Mass Reset Complete!** Successfully processed and demoted **{changes}** members to the Visitor role based on your rules.",
+            ephemeral=True
+        )
+
     @app_commands.command(
         name="force_rank_audit",
         description="Run a full server audit to enforce rank rules and nickname tags across all members.",
