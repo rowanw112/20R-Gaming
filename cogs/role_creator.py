@@ -52,6 +52,7 @@ class RoleCreator(commands.Cog):
     @app_commands.describe(
         role_list="Comma separated. Format: Role Name | #HexCode OR ColorName",
         category_anchor="The role to place these new roles directly UNDER (Optional)",
+        default_color="Hex code or color name to apply to ALL roles in this batch (Optional)",
         hoist="Display role members separately in the sidebar? (Default: False)",
         mentionable="Allow anyone to @mention these roles? (Default: False)",
     )
@@ -60,6 +61,7 @@ class RoleCreator(commands.Cog):
         interaction: discord.Interaction,
         role_list: str,
         category_anchor: discord.Role | None = None,
+        default_color: str | None = None,
         hoist: bool = False,
         mentionable: bool = False,
     ):
@@ -76,11 +78,15 @@ class RoleCreator(commands.Cog):
             )
             return
 
+        # Pre-parse the default color if one was provided
+        base_color = parse_color(default_color) if default_color else discord.Color.default()
+
         created_roles = []
         failed_roles = []
 
         # 1. Create the roles
         for entry in parsed_entries:
+            # If they used the specific inline override (e.g., Role | #FF0000)
             if "|" in entry:
                 parts = entry.split("|", 1)
                 name = parts[0].strip()
@@ -88,7 +94,7 @@ class RoleCreator(commands.Cog):
                 color = parse_color(color_input)
             else:
                 name = entry.strip()
-                color = discord.Color.default()
+                color = base_color
 
             try:
                 role = await guild.create_role(
@@ -117,13 +123,8 @@ class RoleCreator(commands.Cog):
         anchor_warning = ""
         if category_anchor:
             try:
-                # Discord position hierarchy: higher number = higher on the list.
-                # To put a role directly UNDER the anchor, we target anchor.position - 1.
                 target_position = max(1, category_anchor.position - 1)
                 
-                # We map all new roles to this same position.
-                # Discord's API will automatically sort them sequentially.
-                # We reverse the list so they appear in the exact order you typed them!
                 position_updates = {
                     role: target_position for role in reversed(created_roles)
                 }
