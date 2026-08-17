@@ -577,8 +577,8 @@ class RoleManager(commands.Cog):
 
         # Priority order for Tag Prefixes (Elite > Staff > Rank > Recruit > Basic)
         priority_order = []
-        priority_order.extend(elite_ids)
         priority_order.extend(staff_ids)
+        priority_order.extend(elite_ids)
         priority_order.extend(rank_ids)
         if recruit_id:
             priority_order.append(recruit_id)
@@ -765,8 +765,8 @@ class RoleManager(commands.Cog):
                 f"• **Recruit Role:** {recruit_str}\n"
                 f"• **Member Requirement:** {member_str}\n"
                 f"• **Custom Prefix Bypass:** {custom_prefix_str}\n"
-                f"• **Elite Roles (Highest ➔ Lowest):** {elite_str}\n"
                 f"• **Staff Hierarchy (Highest ➔ Lowest):** {staff_str}\n"
+                f"• **Elite Roles (Highest ➔ Lowest):** {elite_str}\n"
                 f"• **Rank Hierarchy (Highest ➔ Lowest):** {ranks_str}"
             ),
             inline=False,
@@ -803,7 +803,7 @@ class RoleManager(commands.Cog):
         embed.add_field(
             name="🏷️ Nickname Tag Priority",
             value=(
-                "Prefixes follow a strict priority order: **Elite > Staff > Rank > Recruit > Basic**.\n"
+                "Prefixes follow a strict priority order: **Staff > Elite > Rank > Recruit > Basic**.\n"
                 "Staff can click the button below to assign custom nickname tags to any of these role categories."
             ),
             inline=False,
