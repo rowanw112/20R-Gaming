@@ -135,10 +135,10 @@ class MemberApplicationModal(discord.ui.Modal, title="20R Member Application"):
         max_length=200,
     )
     games = discord.ui.TextInput(
-        label="Interested Games / Divisions (Optional)",
+        label="Interested Games / Divisions",
         placeholder="e.g., Wardogs, Rust, Squad, BF6, Rocket League",
         style=discord.TextStyle.paragraph,
-        required=False,
+        required=True,
         max_length=300,
     )
 
@@ -934,7 +934,7 @@ class ApplicationManager(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        """Auto-syncs members who earn the Application Operator role into all operator threads."""
+        """Auto-syncs members who earn or lose the Application Operator role into all operator threads."""
         if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         
         guild = after.guild
@@ -951,6 +951,7 @@ class ApplicationManager(commands.Cog):
         had_role = op_role in before.roles
         has_role = op_role in after.roles
 
+        # 1. User GAINED the Application Operator Role
         if not had_role and has_role:
             for thread_key in ("open_thread_id", "approved_thread_id", "denied_thread_id"):
                 t_id = config.get(thread_key)
@@ -961,6 +962,18 @@ class ApplicationManager(commands.Cog):
                             await thread.add_user(after)
                         except discord.HTTPException as e:
                             logger.error(f"Failed to add {after.display_name} to operator thread: {e}")
+                            
+        # 2. User LOST the Application Operator Role
+        elif had_role and not has_role:
+            for thread_key in ("open_thread_id", "approved_thread_id", "denied_thread_id"):
+                t_id = config.get(thread_key)
+                if t_id:
+                    thread = guild.get_thread(t_id)
+                    if thread:
+                        try:
+                            await thread.remove_user(after)
+                        except discord.HTTPException as e:
+                            logger.error(f"Failed to remove {after.display_name} from operator thread: {e}")
 
     @app_commands.command(
         name="send_app_panel",
