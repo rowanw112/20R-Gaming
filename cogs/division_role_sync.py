@@ -313,7 +313,14 @@ class DivisionRoleSync(commands.Cog):
             msg = f"✅ Registered new legacy division **{division_name}**."
 
         save_legacy_division_records(interaction.guild.id, records)
+        
+        # 1. Update the Mapping Dashboard
         await self.update_sync_dashboard(interaction.guild)
+
+        # 2. Force the Reaction Roles Dashboard to update instantly
+        react_cog = self.bot.get_cog("ReactForRoles")
+        if react_cog:
+            await react_cog.update_react_embeds(interaction.guild)
 
         status_type = "🔒 Restrictive (Application Only)" if is_restrictive else "🔓 Open (Auto-Synced)"
 
@@ -322,6 +329,7 @@ class DivisionRoleSync(commands.Cog):
         embed.add_field(name="Public Role", value=public_role.mention, inline=True)
         embed.add_field(name="Division Role", value=division_role.mention, inline=True)
         embed.add_field(name="Access Mode", value=status_type, inline=False)
+        embed.set_footer(text="Mapping and Reaction Role dashboards updated automatically.")
 
         await interaction.followup.send(content=msg, embed=embed, ephemeral=True)
 
