@@ -1068,21 +1068,35 @@ class RoleManager(commands.Cog):
         guild = interaction.guild
         cfg = load_json(guild.id)
 
+        # The setup command saves Basic & Visitor roles together under 'basic_role_ids'
+        basic_ids = cfg.get("basic_role_ids", [])
         visitor_ids = cfg.get("visitor_role_ids", [])
-        if not visitor_ids:
-            return await interaction.followup.send("❌ No Visitor role configured! Please run `/setup_rank_roles` first.", ephemeral=True)
+        combined_guest_ids = list(dict.fromkeys(visitor_ids + basic_ids))
+
+        if not combined_guest_ids:
+            return await interaction.followup.send("❌ No Visitor/Basic roles configured! Please run `/setup_rank_roles` first.", ephemeral=True)
             
-        target_visitor_role = guild.get_role(visitor_ids[0])
+        # Attempt to find the specific "Visitor" or "Stranger" role, otherwise default to the lowest one
+        target_visitor_role = None
+        for rid in reversed(combined_guest_ids):
+            role = guild.get_role(rid)
+            if role and ("visitor" in role.name.lower() or "stranger" in role.name.lower()):
+                target_visitor_role = role
+                break
+                
+        # Fallback to the last role in the list if no specific name matches
+        if not target_visitor_role:
+            target_visitor_role = guild.get_role(combined_guest_ids[-1])
+
         if not target_visitor_role:
             return await interaction.followup.send("❌ The configured Visitor role could not be found in the server.", ephemeral=True)
 
         member_role_id = cfg.get("member_role_id")
         recruit_role_id = cfg.get("recruit_role_id")
         rank_ids = cfg.get("rank_role_ids", [])
-        basic_ids = cfg.get("basic_role_ids", [])
         
         # Combine all mapped roles to check for completely unassigned users
-        all_mapped_ids = set(visitor_ids + basic_ids + rank_ids + cfg.get("staff_role_ids", []) + cfg.get("elite_role_ids", []))
+        all_mapped_ids = set(combined_guest_ids + rank_ids + cfg.get("staff_role_ids", []) + cfg.get("elite_role_ids", []))
         if member_role_id: all_mapped_ids.add(member_role_id)
         if recruit_role_id: all_mapped_ids.add(recruit_role_id)
 
@@ -1153,6 +1167,7 @@ class RoleManager(commands.Cog):
             ephemeral=True
         )
 
+        
     @app_commands.command(
         name="force_rank_audit",
         description="Run a full server audit to enforce rank rules and nickname tags across all members.",
