@@ -46,11 +46,12 @@ class RoleCreator(commands.Cog):
 
     @app_commands.command(
         name="createroles",
-        description="Bulk create roles using comma-separated values or newlines.",
+        description="Bulk create roles, optionally placing them under a specific category role.",
     )
     @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.describe(
-        role_list="Separate entries with commas. Format: Role Name | #HexCode OR ColorName",
+        role_list="Comma separated. Format: Role Name | #HexCode OR ColorName",
+        category_anchor="The role to place these new roles directly UNDER (Optional)",
         hoist="Display role members separately in the sidebar? (Default: False)",
         mentionable="Allow anyone to @mention these roles? (Default: False)",
     )
@@ -58,6 +59,7 @@ class RoleCreator(commands.Cog):
         self,
         interaction: discord.Interaction,
         role_list: str,
+        category_anchor: discord.Role | None = None,
         hoist: bool = False,
         mentionable: bool = False,
     ):
@@ -77,6 +79,7 @@ class RoleCreator(commands.Cog):
         created_roles = []
         failed_roles = []
 
+        # 1. Create the roles
         for entry in parsed_entries:
             if "|" in entry:
                 parts = entry.split("|", 1)
@@ -103,6 +106,36 @@ class RoleCreator(commands.Cog):
             except discord.HTTPException as e:
                 failed_roles.append(f"`{name}` ({e.text})")
 
+        if not created_roles:
+            await interaction.followup.send(
+                f"❌ Failed to create any roles.\nErrors: {', '.join(failed_roles)}", 
+                ephemeral=True
+            )
+            return
+
+        # 2. If an anchor is provided, bulk-move the newly created roles directly beneath it
+        anchor_warning = ""
+        if category_anchor:
+            try:
+                # Discord position hierarchy: higher number = higher on the list.
+                # To put a role directly UNDER the anchor, we target anchor.position - 1.
+                target_position = max(1, category_anchor.position - 1)
+                
+                # We map all new roles to this same position.
+                # Discord's API will automatically sort them sequentially.
+                # We reverse the list so they appear in the exact order you typed them!
+                position_updates = {
+                    role: target_position for role in reversed(created_roles)
+                }
+                
+                await guild.edit_role_positions(position_updates, reason=f"Anchoring under {category_anchor.name}")
+            except discord.Forbidden:
+                anchor_warning = f"\n\n⚠️ **Warning:** Created the roles, but I lack permission to drag them under **{category_anchor.name}**. (My top role must be higher than the anchor!)"
+            except discord.HTTPException as e:
+                logger.error(f"Failed to move roles under anchor: {e}")
+                anchor_warning = "\n\n⚠️ **Warning:** Created the roles, but Discord threw an error when moving them. You may need to drag them manually."
+
+        # 3. Success Output
         summary = [
             f"✅ **Successfully created {len(created_roles)} role(s):**"
         ]
@@ -114,6 +147,14 @@ class RoleCreator(commands.Cog):
             summary.append(f"\n❌ **Failed ({len(failed_roles)}):**")
             for err in failed_roles:
                 summary.append(f"• {err}")
+
+        if category_anchor and not anchor_warning:
+            summary.append(f"\n📌 *Anchored directly under {category_anchor.mention}.*")
+        elif not category_anchor:
+            summary.append("\n⬇️ *Placed at the bottom of the role list (No category selected).*")
+            
+        if anchor_warning:
+            summary.append(anchor_warning)
 
         await interaction.followup.send("\n".join(summary), ephemeral=True)
 
