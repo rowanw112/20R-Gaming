@@ -100,8 +100,8 @@ class DynamicVoiceControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    async def _get_vc_data(self, interaction: discord.Interaction) -> tuple[int | None, int | None]:
-        """Fetches the owner ID and index from config. Returns (owner_id, index)."""
+    async def _get_vc_data(self, interaction: discord.Interaction) -> tuple[int | None, int | None, bool]:
+        """Fetches the owner ID, index, and staff status. Returns (owner_id, index, is_staff)."""
         cfg = load_config(interaction.guild_id)
         channel_data = cfg.get("active_channels", {}).get(str(interaction.channel_id))
 
@@ -109,22 +109,30 @@ class DynamicVoiceControlView(discord.ui.View):
             await interaction.response.send_message(
                 "❌ This channel is no longer tracked as a dynamic voice channel.", ephemeral=True
             )
-            return None, None
+            return None, None, False
 
         owner_id = channel_data.get("owner_id")
         index = channel_data.get("index")
 
-        if interaction.user.id != owner_id and not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
-                "❌ Only the channel owner can use these controls!", ephemeral=True
-            )
-            return None, None
+        # Check for Staff Roles
+        rank_cfg = load_rank_config(interaction.guild_id)
+        staff_ids = rank_cfg.get("staff_role_ids", [])
+        
+        is_staff = any(r.id in staff_ids for r in interaction.user.roles)
+        is_admin = interaction.user.guild_permissions.administrator
+        is_owner = interaction.user.id == owner_id
 
-        return owner_id, index
+        if not (is_owner or is_staff or is_admin):
+            await interaction.response.send_message(
+                "❌ Only the channel owner or server Staff can use these controls!", ephemeral=True
+            )
+            return None, None, False
+
+        return owner_id, index, (is_staff or is_admin)
 
     @discord.ui.button(label="Lock / Unlock", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="dvc_lock", row=0)
     async def toggle_lock(self, interaction: discord.Interaction, button: discord.ui.Button):
-        owner_id, index = await self._get_vc_data(interaction)
+        owner_id, index, is_staff = await self._get_vc_data(interaction)
         if not owner_id: return
 
         await interaction.response.defer(ephemeral=True)
@@ -141,7 +149,7 @@ class DynamicVoiceControlView(discord.ui.View):
 
     @discord.ui.button(label="Rename", style=discord.ButtonStyle.secondary, emoji="✏️", custom_id="dvc_rename", row=0)
     async def rename_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        owner_id, index = await self._get_vc_data(interaction)
+        owner_id, index, is_staff = await self._get_vc_data(interaction)
         if not owner_id: return
 
         channel = interaction.channel
@@ -166,7 +174,7 @@ class DynamicVoiceControlView(discord.ui.View):
 
     @discord.ui.button(label="Set Limit", style=discord.ButtonStyle.secondary, emoji="👥", custom_id="dvc_limit", row=0)
     async def set_limit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        owner_id, index = await self._get_vc_data(interaction)
+        owner_id, index, is_staff = await self._get_vc_data(interaction)
         if not owner_id: return
 
         channel = interaction.channel
@@ -196,7 +204,7 @@ class DynamicVoiceControlView(discord.ui.View):
 
     @discord.ui.button(label="Region", style=discord.ButtonStyle.secondary, emoji="🌍", custom_id="dvc_region", row=0)
     async def set_region(self, interaction: discord.Interaction, button: discord.ui.Button):
-        owner_id, index = await self._get_vc_data(interaction)
+        owner_id, index, is_staff = await self._get_vc_data(interaction)
         if not owner_id: return
 
         guild_cfg = load_config(interaction.guild.id)
@@ -206,7 +214,6 @@ class DynamicVoiceControlView(discord.ui.View):
             discord.SelectOption(label="Automatic", value="auto", description="Best region automatically selected")
         ]
 
-        # Limit to 24 to leave room for 'Automatic'
         for region in valid_regions[:24]:
             options.append(discord.SelectOption(label=get_region_label(region), value=region))
 
@@ -229,7 +236,6 @@ class DynamicVoiceControlView(discord.ui.View):
                 display_name = "Automatic" if val == "auto" else get_region_label(val)
                 await select_interaction.edit_original_response(content=f"✅ Voice region successfully set to **{display_name}**.", view=None)
             except discord.HTTPException as e:
-                # Intelligent 400 Error Handler to learn API updates automatically
                 if e.status == 400 and "rtc_region" in str(e) and "Value must be one of" in str(e):
                     match = re.search(r"Value must be one of \((.*?)\)", str(e))
                     if match:
@@ -259,7 +265,7 @@ class DynamicVoiceControlView(discord.ui.View):
 
     @discord.ui.button(label="Transfer", style=discord.ButtonStyle.primary, emoji="👑", custom_id="dvc_transfer", row=1)
     async def transfer_ownership(self, interaction: discord.Interaction, button: discord.ui.Button):
-        owner_id, index = await self._get_vc_data(interaction)
+        owner_id, index, is_staff = await self._get_vc_data(interaction)
         if not owner_id: return
 
         channel = interaction.channel
@@ -330,10 +336,10 @@ class DynamicVoiceControlView(discord.ui.View):
             embed.description = (
                 f"Welcome {new_owner.mention}! You are the owner of this dynamic channel.\n\n"
                 "**Available Controls:**\n"
-                "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute\n\n"
+                "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute • 🔕 Toggle Ping\n\n"
                 "⚠️ **Mute Feature Rules:** Do not abuse the local mute feature. Muting without a valid reason "
                 "is considered abuse and will result in the loss of this privilege. You may only mute/unmute a "
-                "specific user once per 10 minutes. *(Note: Muting/Unmuting a user will automatically disconnect them to apply the change).* "
+                "specific user once per 10 minutes."
             )
             await interaction.message.edit(content=new_owner.mention, embed=embed)
 
@@ -343,11 +349,11 @@ class DynamicVoiceControlView(discord.ui.View):
         select.callback = select_callback
         view = AutoDeleteView(interaction, timeout=30.0)
         view.add_item(select)
-        await interaction.response.send_message("Select a member to transfer ownership to:", view=view, ephemeral=True)
+        await interaction.response.send_message("Select a member to transfer ownership to (Staff can select themselves):", view=view, ephemeral=True)
 
     @discord.ui.button(label="Local Mute", style=discord.ButtonStyle.danger, emoji="🔇", custom_id="dvc_mute", row=1)
     async def local_mute(self, interaction: discord.Interaction, button: discord.ui.Button):
-        owner_id, index = await self._get_vc_data(interaction)
+        owner_id, index, is_staff = await self._get_vc_data(interaction)
         if not owner_id: return
 
         guild = interaction.guild
@@ -484,6 +490,43 @@ class DynamicVoiceControlView(discord.ui.View):
         view.add_item(select)
         await interaction.response.send_message("Select a member to toggle local channel mute:", view=view, ephemeral=True)
 
+    @discord.ui.button(label="Toggle Ping", style=discord.ButtonStyle.success, emoji="🔕", custom_id="dvc_ping", row=1)
+    async def toggle_ping(self, interaction: discord.Interaction, button: discord.ui.Button):
+        owner_id, index, is_staff = await self._get_vc_data(interaction)
+        if not owner_id: return
+
+        # Ensure Staff can't press this to mute the owner's pings for them
+        if interaction.user.id != owner_id:
+            await interaction.response.send_message(
+                "❌ Only the actual channel owner can toggle their ping setting.", ephemeral=True
+            )
+            return
+
+        cfg = load_config(interaction.guild.id)
+        role_id = cfg.get("ping_muted_role_id")
+        
+        if not role_id:
+            await interaction.response.send_message(
+                "❌ The Ping Muted role hasn't been configured by an Admin yet! Have them run `/setup_voice_hub`.", ephemeral=True
+            )
+            return
+
+        target_role = interaction.guild.get_role(role_id)
+        if not target_role:
+            await interaction.response.send_message(
+                "❌ The configured Ping Muted role was deleted from the server.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        
+        if target_role in interaction.user.roles:
+            await interaction.user.remove_roles(target_role, reason="VC Ping Toggle via Panel")
+            await interaction.followup.send("🔊 You will now be **pinged** when creating a new dynamic channel.", ephemeral=True)
+        else:
+            await interaction.user.add_roles(target_role, reason="VC Ping Toggle via Panel")
+            await interaction.followup.send("🔇 You will **no longer be pinged** when creating a new dynamic channel.", ephemeral=True)
+
 
 # -------------------------------------------------------------------------
 # DYNAMIC VOICE COG
@@ -619,15 +662,23 @@ class DynamicVoice(commands.Cog):
                     description=(
                         f"Welcome {member.mention}! You are the owner of this dynamic channel.\n\n"
                         "**Available Controls:**\n"
-                        "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute\n\n"
+                        "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute • 🔕 Toggle Ping\n\n"
                         "⚠️ **Mute Feature Rules:** Do not abuse the local mute feature. Muting without a valid reason "
                         "is considered abuse and will result in the loss of this privilege. You may only mute/unmute a "
-                        "specific user once per 10 minutes. *(Note: Muting/Unmuting a user will automatically disconnect them to apply the change).* "
+                        "specific user once per 10 minutes."
                     ),
                     color=discord.Color.blue(),
                 )
                 view = DynamicVoiceControlView()
-                control_msg = await new_channel.send(content=member.mention, embed=embed, view=view)
+                
+                # Check if the user has opted out of the ping
+                ping_role_id = cfg.get("ping_muted_role_id")
+                is_ping_muted = ping_role_id and ping_role_id in [r.id for r in member.roles]
+                
+                # Format the message based on their preference
+                message_content = f"Welcome to your channel, {member.display_name}!" if is_ping_muted else member.mention
+
+                control_msg = await new_channel.send(content=message_content, embed=embed, view=view)
 
                 active_channels[str(new_channel.id)] = {"index": index_counter, "owner_id": member.id, "control_msg_id": control_msg.id}
                 cfg["active_channels"] = active_channels
@@ -697,10 +748,10 @@ class DynamicVoice(commands.Cog):
                                     embed.description = (
                                         f"Welcome {new_owner.mention}! You are the owner of this dynamic channel.\n\n"
                                         "**Available Controls:**\n"
-                                        "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute\n\n"
+                                        "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute • 🔕 Toggle Ping\n\n"
                                         "⚠️ **Mute Feature Rules:** Do not abuse the local mute feature. Muting without a valid reason "
                                         "is considered abuse and will result in the loss of this privilege. You may only mute/unmute a "
-                                        "specific user once per 10 minutes. *(Note: Muting/Unmuting a user will automatically disconnect them to apply the change).* "
+                                        "specific user once per 10 minutes."
                                     )
                                     await control_msg.edit(content=new_owner.mention, embed=embed)
                             except discord.HTTPException as e:
@@ -722,6 +773,7 @@ class DynamicVoice(commands.Cog):
     @app_commands.describe(
         existing_channel="Optional: Select an existing voice channel to convert into a Hub",
         mute_restricted_role="Optional: Role for users banned from using the Mute feature",
+        ping_muted_role="Optional: Role for users who opted out of the bot ping on channel creation",
         channel_name_format="Optional: Name format (Use {index} & {username}). Default: #{index}-{username}'s-Channel"
     )
     async def setup_voice_hub(
@@ -729,6 +781,7 @@ class DynamicVoice(commands.Cog):
         interaction: discord.Interaction, 
         existing_channel: discord.VoiceChannel | None = None,
         mute_restricted_role: discord.Role | None = None,
+        ping_muted_role: discord.Role | None = None,
         channel_name_format: str | None = None
     ):
         await interaction.response.defer(ephemeral=True)
@@ -757,18 +810,23 @@ class DynamicVoice(commands.Cog):
         if mute_restricted_role:
             guild_cfg["mute_restricted_role_id"] = mute_restricted_role.id
 
+        if ping_muted_role:
+            guild_cfg["ping_muted_role_id"] = ping_muted_role.id
+
         fmt_to_save = channel_name_format.strip() if channel_name_format else "#{index}-{username}'s-Channel"
         guild_cfg["channel_name_format"] = fmt_to_save
 
         save_config(guild.id, guild_cfg)
 
         restricted_msg = f"\n• **Mute Restricted Role:** {mute_restricted_role.mention}" if mute_restricted_role else ""
+        ping_role_msg = f"\n• **Ping Muted Role:** {ping_muted_role.mention}" if ping_muted_role else ""
 
         await interaction.followup.send(
             f"✅ **Voice Hub Active!**\n"
             f"• **Hub Channel:** {target_hub.mention}\n"
             f"• **Channel Name Template:** `{fmt_to_save}`"
-            f"{restricted_msg}",
+            f"{restricted_msg}"
+            f"{ping_role_msg}",
             ephemeral=True,
         )
 
