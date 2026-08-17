@@ -186,6 +186,38 @@ class ThreadSync(commands.Cog):
         except (discord.Forbidden, discord.HTTPException) as e:
             logger.error(f"❌ Error posting Thread Sync Dashboard in #{channel.name}: {e}")
 
+    @discord.app_commands.command(
+        name="set_thread_sync_dashboard",
+        description="Set the channel to post and maintain the live Thread Sync Dashboard.",
+    )
+    @discord.app_commands.checks.has_permissions(administrator=True)
+    async def set_thread_sync_dashboard(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel | None = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        target_channel = channel or interaction.channel
+
+        if not isinstance(target_channel, discord.TextChannel):
+            await interaction.followup.send(
+                "❌ Target channel must be a text channel!", ephemeral=True
+            )
+            return
+
+        dash_cfg = load_thread_sync_dashboard_config(interaction.guild_id)
+
+        dash_cfg["channel_id"] = target_channel.id
+        dash_cfg["message_id"] = None
+        save_thread_sync_dashboard_config(interaction.guild_id, dash_cfg)
+
+        await self.update_dashboard(interaction.guild)
+
+        await interaction.followup.send(
+            f"✅ Thread Sync Dashboard active in {target_channel.mention}!", ephemeral=True
+        )
+
+
     # -------------------------------------------------------------------------
     # REAL-TIME ROLE TOGGLE LISTENER
     # -------------------------------------------------------------------------
