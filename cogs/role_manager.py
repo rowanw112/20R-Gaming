@@ -1007,16 +1007,30 @@ class RoleManager(commands.Cog):
             # BRANCH 7: MEMBER STATUS REMOVED (Full Demotion to Visitor)
             # -----------------------------------------------------------------
             elif lost_member:
+                # 1. Strip all official ranks, staff roles, elite roles, and other basic roles
                 for r in after.roles:
                     if r.id in rank_role_ids or r.id in staff_role_ids or r.id in elite_role_ids or r.id in all_basic_ids or r.id == recruit_role_id:
                         if r not in roles_to_remove:
                             roles_to_remove.append(r)
 
-                visitor_id = list(visitor_role_ids)[0] if visitor_role_ids else None
-                if visitor_id:
-                    v_role = guild.get_role(visitor_id)
-                    if v_role and v_role not in roles_to_add:
-                        roles_to_add.append(v_role)
+                # 2. Dynamically find the Visitor/Stranger role from the combined basic roles
+                target_visitor_role = None
+                combined_guest_ids = list(all_basic_ids)
+                
+                if combined_guest_ids:
+                    # Check from lowest to highest for a matching name
+                    for rid in reversed(combined_guest_ids):
+                        v_role = guild.get_role(rid)
+                        if v_role and ("visitor" in v_role.name.lower() or "stranger" in v_role.name.lower()):
+                            target_visitor_role = v_role
+                            break
+                            
+                    # Fallback to the lowest tiered role if no name matches
+                    if not target_visitor_role:
+                        target_visitor_role = guild.get_role(combined_guest_ids[-1])
+
+                if target_visitor_role and target_visitor_role not in roles_to_add:
+                    roles_to_add.append(target_visitor_role)
 
             # -----------------------------------------------------------------
             # FALLBACK RECONCILIATION
@@ -1167,7 +1181,7 @@ class RoleManager(commands.Cog):
             ephemeral=True
         )
 
-        
+
     @app_commands.command(
         name="force_rank_audit",
         description="Run a full server audit to enforce rank rules and nickname tags across all members.",
