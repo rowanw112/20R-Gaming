@@ -187,6 +187,23 @@ class ThreadSync(commands.Cog):
             logger.error(f"❌ Error posting Thread Sync Dashboard in #{channel.name}: {e}")
 
     @discord.app_commands.command(
+        name="force_thread_sync",
+        description="Manually run a full audit to add all role-holders into their mapped private threads."
+    )
+    @discord.app_commands.checks.has_permissions(administrator=True)
+    async def force_thread_sync(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        # Run the massive audit loop already built into your file
+        await self.run_full_thread_audit(interaction.guild)
+        
+        await interaction.followup.send(
+            "✅ **Thread Audit Complete!** The bot has successfully swept all mapped threads and added anyone who was missing.",
+            ephemeral=True
+        )
+
+
+    @discord.app_commands.command(
         name="set_thread_sync_dashboard",
         description="Set the channel to post and maintain the live Thread Sync Dashboard.",
     )
