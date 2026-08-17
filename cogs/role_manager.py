@@ -1086,6 +1086,7 @@ class RoleManager(commands.Cog):
         if recruit_role_id: all_mapped_ids.add(recruit_role_id)
 
         changes = 0
+        logger.info(f"[MassReset] 🚀 Starting mass reset in guild: '{guild.name}'")
         
         for member in guild.members:
             if member.bot: 
@@ -1094,6 +1095,7 @@ class RoleManager(commands.Cog):
             user_roles = {r.id for r in member.roles}
             needs_visitor = False
             roles_to_remove = []
+            log_reason = ""
 
             has_member = member_role_id in user_roles
             has_recruit = recruit_role_id in user_roles
@@ -1103,18 +1105,20 @@ class RoleManager(commands.Cog):
             if has_member and not has_recruit and not has_rank:
                 needs_visitor = True
                 roles_to_remove.append(guild.get_role(member_role_id))
+                log_reason = "Stuck Member (Has 20R Member, but no Recruit/Rank)"
                 
             # Condition 2: Is a current Recruit
             elif has_recruit:
                 needs_visitor = True
                 roles_to_remove.append(guild.get_role(recruit_role_id))
-                # Strip member role too if they somehow have both
                 if has_member: 
                     roles_to_remove.append(guild.get_role(member_role_id))
+                log_reason = "Current Recruit"
                     
             # Condition 3: Missing basic roles, member, recruit, ranks, or staff (completely unassigned)
             elif not any(r_id in user_roles for r_id in all_mapped_ids):
                 needs_visitor = True
+                log_reason = "Completely Unassigned (Missing all basic/staff/rank roles)"
                 
             # Execution for this member
             if needs_visitor:
@@ -1123,18 +1127,28 @@ class RoleManager(commands.Cog):
                 
                 if roles_to_add or valid_removals:
                     try:
+                        add_names = [r.name for r in roles_to_add]
+                        remove_names = [r.name for r in valid_removals]
+                        
+                        # Logging exactly what it is doing to this specific user
+                        logger.info(
+                            f"[MassReset] 🛠️ Processing {member.display_name} ({member.id}) | "
+                            f"Reason: {log_reason} | Adding: {add_names} | Removing: {remove_names}"
+                        )
+                        
                         if roles_to_add:
-                            await member.add_roles(*roles_to_add, reason="Mass Visitor Reset: Unassigned/Recruit/Stuck Member")
+                            await member.add_roles(*roles_to_add, reason=f"Mass Visitor Reset: {log_reason}")
                         if valid_removals:
-                            await member.remove_roles(*valid_removals, reason="Mass Visitor Reset")
+                            await member.remove_roles(*valid_removals, reason=f"Mass Visitor Reset: {log_reason}")
                         
                         changes += 1
-                        await asyncio.sleep(0.05) # Prevents Discord API rate limits
+                        await asyncio.sleep(0.05)
                     except discord.HTTPException as e:
-                        logger.error(f"[MassReset] Failed on {member.display_name}: {e}")
+                        logger.error(f"[MassReset] ❌ Failed on {member.display_name}: {e}")
         
+        logger.info(f"[MassReset] ✅ Completed in guild '{guild.name}'. Total members updated: {changes}")
         await interaction.followup.send(
-            f"✅ **Mass Reset Complete!** Successfully processed and demoted **{changes}** members to the Visitor role based on your rules.",
+            f"✅ **Mass Reset Complete!** Successfully processed and demoted **{changes}** members. Check your console logs for a detailed breakdown of exactly who was changed and why.",
             ephemeral=True
         )
 
