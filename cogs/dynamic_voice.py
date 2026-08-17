@@ -17,6 +17,19 @@ DEFAULT_REGIONS = [
     "us-central", "us-east", "us-south", "us-west"
 ]
 
+CONTROL_PANEL_DESC = (
+    "**Available Controls:**\n"
+    "🔒 **Lock / Unlock:** Restrict or allow other members to join your channel.\n"
+    "✏️ **Rename:** Change the name of your voice channel.\n"
+    "👥 **Set Limit:** Cap the maximum number of users (0 for unlimited, up to 99).\n"
+    "🌍 **Region:** Change the server voice region to improve your ping.\n"
+    "👑 **Transfer:** Pass ownership of this channel to another member inside it.\n"
+    "🔇 **Local Mute:** Forcefully mute or unmute a specific user in your channel.\n"
+    "🔕 **Toggle Ping:** Opt in or out of the bot pinging you when your channel is created.\n\n"
+    "⚠️ **Mute Feature Rules:** Do not abuse the local mute feature. Muting without a valid reason "
+    "is considered abuse and will result in the loss of this privilege. You may only mute/unmute a "
+    "specific user once per 10 minutes."
+)
 
 def get_config_path(guild_id: int, filename: str) -> str:
     path = f"data/{guild_id}"
@@ -333,14 +346,7 @@ class DynamicVoiceControlView(discord.ui.View):
             embed = interaction.message.embeds[0]
             clean_name = get_clean_username(new_owner)
             embed.title = f"🎙️ {clean_name}'s Channel Controls"
-            embed.description = (
-                f"Welcome {new_owner.mention}! You are the owner of this dynamic channel.\n\n"
-                "**Available Controls:**\n"
-                "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute • 🔕 Toggle Ping\n\n"
-                "⚠️ **Mute Feature Rules:** Do not abuse the local mute feature. Muting without a valid reason "
-                "is considered abuse and will result in the loss of this privilege. You may only mute/unmute a "
-                "specific user once per 10 minutes."
-            )
+            embed.description = f"Welcome {new_owner.mention}! You are the owner of this dynamic channel.\n\n{CONTROL_PANEL_DESC}"
             await interaction.message.edit(content=new_owner.mention, embed=embed)
 
             await select_interaction.edit_original_response(content=f"✅ Ownership transferred to {new_owner.mention}.")
@@ -659,14 +665,7 @@ class DynamicVoice(commands.Cog):
 
                 embed = discord.Embed(
                     title=f"🎙️ {clean_name}'s Channel Controls",
-                    description=(
-                        f"Welcome {member.mention}! You are the owner of this dynamic channel.\n\n"
-                        "**Available Controls:**\n"
-                        "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute • 🔕 Toggle Ping\n\n"
-                        "⚠️ **Mute Feature Rules:** Do not abuse the local mute feature. Muting without a valid reason "
-                        "is considered abuse and will result in the loss of this privilege. You may only mute/unmute a "
-                        "specific user once per 10 minutes."
-                    ),
+                    description=f"Welcome {member.mention}! You are the owner of this dynamic channel.\n\n{CONTROL_PANEL_DESC}",
                     color=discord.Color.blue(),
                 )
                 view = DynamicVoiceControlView()
@@ -745,14 +744,7 @@ class DynamicVoice(commands.Cog):
                                     embed = control_msg.embeds[0]
                                     clean_name = get_clean_username(new_owner)
                                     embed.title = f"🎙️ {clean_name}'s Channel Controls"
-                                    embed.description = (
-                                        f"Welcome {new_owner.mention}! You are the owner of this dynamic channel.\n\n"
-                                        "**Available Controls:**\n"
-                                        "🔒 Lock/Unlock • ✏️ Rename • 👥 Set Limit • 🌍 Region • 👑 Transfer • 🔇 Local Mute • 🔕 Toggle Ping\n\n"
-                                        "⚠️ **Mute Feature Rules:** Do not abuse the local mute feature. Muting without a valid reason "
-                                        "is considered abuse and will result in the loss of this privilege. You may only mute/unmute a "
-                                        "specific user once per 10 minutes."
-                                    )
+                                    embed.description = f"Welcome {new_owner.mention}! You are the owner of this dynamic channel.\n\n{CONTROL_PANEL_DESC}"
                                     await control_msg.edit(content=new_owner.mention, embed=embed)
                             except discord.HTTPException as e:
                                 logger.error(f"[DynamicVoice] Failed to update control panel on auto-transfer: {e}")
