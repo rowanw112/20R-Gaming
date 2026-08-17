@@ -9,6 +9,8 @@ from core.database import (
     save_legacy_division_records,
     load_role_sync_config,
     save_role_sync_config,
+    load_casual_records,
+    save_casual_records,
 )
 from cogs.application_manager import load_rank_config
 
@@ -160,7 +162,7 @@ class DivisionRoleSync(commands.Cog):
             return
 
         guild = member.guild
-        rank_cfg = load_rank_config(guild.id)  # FIX: Correctly passing guild.id directly
+        rank_cfg = load_rank_config(guild.id)
 
         is_official = self._is_member_or_recruit(member, rank_cfg)
 
@@ -349,6 +351,70 @@ class DivisionRoleSync(commands.Cog):
             )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="add_legacy_casual",
+        description="Register an existing legacy casual game into the reaction roles dashboard.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        game_name="The name of the casual game (Required)",
+        casual_role="The existing role for this casual game (Required)",
+        button_name="Custom button label for reaction role embed (Optional)",
+    )
+    async def add_legacy_casual(
+        self,
+        interaction: discord.Interaction,
+        game_name: str,
+        casual_role: discord.Role,
+        button_name: str = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+
+        casual_records = load_casual_records(guild.id)
+        
+        # Check if this role is already registered
+        existing = next((c for c in casual_records if c.get("role_id") == casual_role.id), None)
+        
+        # Helper to format the name properly (capitalizes first letters, keeps acronyms)
+        def format_game_name(text: str) -> str:
+            if not text: return ""
+            return " ".join([w if w.isupper() else w.capitalize() for w in text.strip().split()])
+
+        clean_game = format_game_name(game_name)
+        clean_button = format_game_name(button_name) if button_name else None
+
+        if existing:
+            existing["game_name"] = clean_game
+            existing["button_name"] = clean_button
+            msg = f"🔄 Updated existing legacy casual record for **{clean_game}**."
+        else:
+            casual_records.append({
+                "game_name": clean_game,
+                "button_name": clean_button,
+                "role_id": casual_role.id,
+                "thread_id": None,  # Explicitly None to tell the bot this has no private thread
+                "is_casual": True,
+            })
+            msg = f"✅ Registered new legacy casual game **{clean_game}**."
+
+        save_casual_records(guild.id, casual_records)
+
+        # Force the Reaction Roles Dashboard to update instantly
+        react_cog = self.bot.get_cog("ReactForRoles")
+        if react_cog:
+            await react_cog.update_react_embeds(guild)
+
+        embed = discord.Embed(title="🕹️ Legacy Casual Game Registered", color=discord.Color.blurple())
+        embed.add_field(name="Game Name", value=clean_game, inline=True)
+        embed.add_field(name="Role", value=casual_role.mention, inline=True)
+        if clean_button:
+            embed.add_field(name="Button Name", value=clean_button, inline=False)
+            
+        embed.set_footer(text="Reaction roles dashboard has been updated automatically.")
+
+        await interaction.followup.send(content=msg, embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
