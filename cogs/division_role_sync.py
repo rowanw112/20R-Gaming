@@ -220,6 +220,8 @@ class DivisionRoleSync(commands.Cog):
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Fires whenever roles change on a user."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        
         before_role_ids = {r.id for r in before.roles}
         after_role_ids = {r.id for r in after.roles}
 

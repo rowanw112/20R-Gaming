@@ -172,7 +172,8 @@ class ThreadKeeper(commands.Cog):
     @commands.Cog.listener()
     async def on_thread_create(self, thread: discord.Thread):
         """Fires when a thread is created; posts the pinned keep-alive status panel."""
-        await asyncio.sleep(1.5)  # Yield to allow bot commands to finish initial setups
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        await asyncio.sleep(1.5)
 
         guild = thread.guild
         if not guild:
@@ -210,6 +211,7 @@ class ThreadKeeper(commands.Cog):
     @commands.Cog.listener()
     async def on_thread_update(self, before: discord.Thread, after: discord.Thread):
         """Immediately unarchives tracked threads if they become archived."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         if not before.archived and after.archived:
             guild = after.guild
             if not guild:
@@ -234,6 +236,7 @@ class ThreadKeeper(commands.Cog):
     @tasks.loop(hours=1)
     async def sweep_tracked_threads(self):
         """Checks ONLY tracked keep-alive threads to ensure none were missed."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         for guild in self.bot.guilds:
             tracked_ids = self.get_tracked_thread_ids(guild)
             if not tracked_ids:
@@ -269,6 +272,7 @@ class ThreadKeeper(commands.Cog):
     @tasks.loop(hours=12)
     async def bump_inactive_threads(self):
         """Maintains UI visibility by bumping tracked threads before the 1-week timeout."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         now = discord.utils.utcnow()
         bump_threshold = now - timedelta(days=6, hours=12)
 

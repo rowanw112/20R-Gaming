@@ -192,6 +192,7 @@ class ThreadSync(commands.Cog):
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Listens for member role additions/removals and syncs thread memberships."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         if after.bot:
             return
 
@@ -268,6 +269,7 @@ class ThreadSync(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """Evicts users added to private threads via pings if they lack required roles."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         if message.author.bot or not message.guild or not isinstance(message.channel, discord.Thread):
             return
 

@@ -42,6 +42,8 @@ class Welcome(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        
         guild_id = member.guild.id
         guild_config = load_config(guild_id)
 
@@ -111,15 +113,13 @@ class Welcome(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         guild_id = member.guild.id
         guild_config = load_config(guild_id)
-
         channel_id = guild_config.get("welcome_channel_id")
         if not channel_id:
             return
-
         channel = member.guild.get_channel(channel_id)
-
         if channel and isinstance(channel, discord.TextChannel):
             try:
                 await channel.send(f"**{member.display_name}** has left the server.")

@@ -865,6 +865,7 @@ class RoleManager(commands.Cog):
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Event-Driven Hierarchy Listener following the Flowchart logic strictly."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         if after.bot or after.id in self._processing_users:
             return
 

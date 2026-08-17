@@ -864,6 +864,8 @@ class ApplicationManager(commands.Cog):
     @tasks.loop(minutes=5)
     async def check_inactive_app_threads(self):
         """Scans for threads archived due to inactivity and automatically denies/expires them."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        
         for guild in self.bot.guilds:
             app_threads = load_app_threads(guild.id)
             if not app_threads:
@@ -933,6 +935,8 @@ class ApplicationManager(commands.Cog):
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Auto-syncs members who earn the Application Operator role into all operator threads."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        
         guild = after.guild
         config = load_app_config(guild.id)
         op_role_id = config.get("application_operator_role_id")

@@ -2,6 +2,7 @@ import logging
 import subprocess
 import sys
 import asyncio
+import os
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -11,6 +12,8 @@ logger = logging.getLogger(__name__)
 class System(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # Initialize the global passive flag to False (Awake) by default
+        self.bot.is_passive = False 
 
     # -------------------------------------------------------------------------
     # 1. UPDATE AND RESTART BOT
@@ -82,14 +85,6 @@ class System(commands.Cog):
                 content=f"❌ **Git Process Failed:**\n```sh\n{e.stderr}\n```"
             )
 
-    @update_bot.error
-    async def update_bot_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "❌ You do not have permission to run this command."
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True)
 
     # -------------------------------------------------------------------------
     # 2. VERSION CHECK COMMAND
@@ -137,6 +132,91 @@ class System(commands.Cog):
                 "❌ **Failed to retrieve version information.**", 
                 ephemeral=True
             )
+
+    # -------------------------------------------------------------------------
+    # 3. PASSIVE MODE TOGGLE
+    # -------------------------------------------------------------------------
+    @app_commands.command(
+        name="toggle_passive",
+        description="Puts the bot to sleep (ignores background events) or wakes it back up."
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def toggle_passive(self, interaction: discord.Interaction):
+        # Flip the boolean switch
+        self.bot.is_passive = not getattr(self.bot, "is_passive", False)
+        
+        if self.bot.is_passive:
+            logger.info(f"[System] 💤 {interaction.user} put the bot into PASSIVE MODE.")
+            await interaction.response.send_message(
+                "💤 **Passive Mode Activated.** The bot is now sleeping and will ignore background events until you run this command again.", 
+                ephemeral=True
+            )
+        else:
+            logger.info(f"[System] 🟢 {interaction.user} woke the bot up.")
+            await interaction.response.send_message(
+                "🟢 **Active Mode Restored.** The bot is now awake and processing events again.", 
+                ephemeral=True
+            )
+
+    # -------------------------------------------------------------------------
+    # 4. LIVE COG UPDATER (NO RESTART NEEDED)
+    # -------------------------------------------------------------------------
+    async def cog_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        """Provides an autocomplete list of all python files inside the /cogs directory."""
+        if not os.path.exists("./cogs"):
+            return []
+            
+        cogs = [f[:-3] for f in os.listdir("./cogs") if f.endswith(".py")]
+        return [
+            app_commands.Choice(name=cog, value=cog)
+            for cog in cogs if current.lower() in cog.lower()
+        ][:25]
+
+    @app_commands.command(
+        name="update_cog",
+        description="Pulls the latest code and reloads a specific cog without restarting the bot."
+    )
+    @app_commands.autocomplete(cog_name=cog_autocomplete)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def update_cog(self, interaction: discord.Interaction, cog_name: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            # 1. Pull latest code from GitHub
+            subprocess.run(["git", "config", "--global", "--add", "safe.directory", "/app"], check=True)
+            subprocess.run(["git", "pull"], check=True, capture_output=True, text=True)
+            
+            # 2. Dynamically reload the module
+            await self.bot.reload_extension(f"cogs.{cog_name}")
+            
+            await interaction.followup.send(f"✅ Successfully pulled updates and hot-reloaded the `{cog_name}` module!", ephemeral=True)
+            logger.info(f"[System] {interaction.user} updated and hot-reloaded cog: {cog_name}")
+            
+        except commands.ExtensionNotLoaded:
+            await interaction.followup.send(f"❌ The module `{cog_name}` is not currently loaded in memory.", ephemeral=True)
+        except commands.ExtensionFailed as e:
+            await interaction.followup.send(f"❌ Failed to load `{cog_name}` due to a code error.\n```py\n{e}```", ephemeral=True)
+        except commands.ExtensionNotFound:
+            await interaction.followup.send(f"❌ Could not find a file named `{cog_name}.py` in the cogs folder.", ephemeral=True)
+        except subprocess.CalledProcessError as e:
+            await interaction.followup.send(f"❌ **Git Pull Failed:**\n```sh\n{e.stderr}\n```", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ An unexpected error occurred:\n```py\n{e}```", ephemeral=True)
+
+    # -------------------------------------------------------------------------
+    # ERROR HANDLERS
+    # -------------------------------------------------------------------------
+    @update_bot.error
+    @check_version.error
+    @toggle_passive.error
+    @update_cog.error
+    async def system_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "❌ You do not have permission to run this command."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(System(bot))

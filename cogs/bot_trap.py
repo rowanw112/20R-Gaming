@@ -147,6 +147,8 @@ class BotTrap(commands.Cog):
     # -------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        
         # Ignore messages sent by bots or outside guilds
         if message.author.bot or not message.guild:
             return

@@ -89,6 +89,7 @@ class ServerStats(commands.Cog):
     @tasks.loop(minutes=10)
     async def update_stats_loop(self):
         """Periodic sweep to keep voice connections and member counts fresh."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
             await self._update_guild_stats(guild)
@@ -100,21 +101,19 @@ class ServerStats(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """Instantly update member stats when someone joins."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         await self._update_guild_stats(member.guild)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         """Instantly update member stats when someone leaves."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         await self._update_guild_stats(member.guild)
 
     @commands.Cog.listener()
-    async def on_voice_state_update(
-        self,
-        member: discord.Member,
-        before: discord.VoiceState,
-        after: discord.VoiceState,
-    ):
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Update voice connection stats when users join/leave voice channels."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
         if before.channel != after.channel:
             await self._update_guild_stats(member.guild)
 

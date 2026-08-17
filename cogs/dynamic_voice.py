@@ -607,6 +607,8 @@ class DynamicVoice(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Monitors voice moves and handles channel creation & teardown."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+
         guild = member.guild
         cfg = load_config(guild.id)
 

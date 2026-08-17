@@ -106,12 +106,13 @@ class CategoryRoleSync(commands.Cog):
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Fires ONLY when roles actually change (ignoring nickname edits)."""
+        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        
         before_roles = set(before.roles)
         after_roles = set(after.roles)
 
         if before_roles != after_roles:
             await self.sync_member_categories(after)
-
     # -------------------------------------------------------------------------
     # MANAGEMENT COMMANDS
     # -------------------------------------------------------------------------
