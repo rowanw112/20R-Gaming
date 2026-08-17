@@ -281,6 +281,63 @@ class DivisionRoleSync(commands.Cog):
         )
 
     @app_commands.command(
+        name="remove_legacy_division",
+        description="Remove a legacy division from the database to stop auto-syncing its roles.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def remove_legacy_division(
+        self, interaction: discord.Interaction, division_role: discord.Role
+    ):
+        await interaction.response.defer(ephemeral=True)
+        records = load_legacy_division_records(interaction.guild.id)
+
+        # Filter out the record that matches the division role
+        original_count = len(records)
+        records = [r for r in records if r.get("member_role_id") != division_role.id]
+
+        if len(records) == original_count:
+            await interaction.followup.send(f"❌ Could not find a legacy division linked to {division_role.mention}.", ephemeral=True)
+            return
+
+        save_legacy_division_records(interaction.guild.id, records)
+        
+        # Update the dashboards
+        await self.update_sync_dashboard(interaction.guild)
+        react_cog = self.bot.get_cog("ReactForRoles")
+        if react_cog:
+            await react_cog.update_react_embeds(interaction.guild)
+
+        await interaction.followup.send(f"✅ Successfully removed legacy division sync for {division_role.mention}. The bot will no longer auto-sync this role!", ephemeral=True)
+
+    @app_commands.command(
+        name="remove_legacy_casual",
+        description="Remove a legacy casual game from the reaction roles dashboard.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def remove_legacy_casual(
+        self, interaction: discord.Interaction, casual_role: discord.Role
+    ):
+        await interaction.response.defer(ephemeral=True)
+        casual_records = load_casual_records(interaction.guild.id)
+
+        # Filter out the record that matches the casual role
+        original_count = len(casual_records)
+        casual_records = [c for c in casual_records if c.get("role_id") != casual_role.id]
+
+        if len(casual_records) == original_count:
+            await interaction.followup.send(f"❌ Could not find a legacy casual game linked to {casual_role.mention}.", ephemeral=True)
+            return
+
+        save_casual_records(interaction.guild.id, casual_records)
+        
+        # Update the dashboards
+        react_cog = self.bot.get_cog("ReactForRoles")
+        if react_cog:
+            await react_cog.update_react_embeds(interaction.guild)
+
+        await interaction.followup.send(f"✅ Successfully removed legacy casual game {casual_role.mention} from the dashboard!", ephemeral=True)
+
+    @app_commands.command(
         name="add_legacy_division",
         description="Register an existing legacy division into the auto-role sync system.",
     )
