@@ -87,7 +87,21 @@ class RankDisplay(commands.Cog):
 
         staff_formatted = "\n".join(staff_lines) if staff_lines else "*No staff roles configured.*"
 
-        # 2. Rank Progression Hierarchy (Ranks I-VII + Recruit at bottom)
+        # 2. Elite Roles Hierarchy
+        elite_ids = cfg.get("elite_role_ids", [])
+        elite_lines = []
+        for idx, rid in enumerate(elite_ids):
+            role = guild.get_role(rid)
+            if role:
+                pfx_str = clean_tag(prefixes.get(str(rid)))
+                elite_lines.append(f"**{idx + 1}.** {role.mention}{pfx_str}")
+
+        elite_formatted = "\n".join(elite_lines) if elite_lines else "*No elite roles configured.*"
+        
+        # Add the flavor text for the elite roles
+        elite_desc = "*These prestigious ranks are awarded to members who have demonstrated unwavering dedication to the cause of 20R. They stand as the seasoned veterans and pillars of our community.*\n\n"
+
+        # 3. Rank Progression Hierarchy (Ranks I-VII + Recruit at bottom)
         rank_ids = cfg.get("rank_role_ids", [])
         rank_lines = []
         for idx, rid in enumerate(rank_ids):
@@ -103,7 +117,7 @@ class RankDisplay(commands.Cog):
 
         ranks_formatted = "\n".join(rank_lines) if rank_lines else "*No rank progression roles configured.*"
 
-        # 3. Community Membership & Guest Roles
+        # 4. Community Membership & Guest Roles
         member_role = guild.get_role(cfg.get("member_role_id", 0))
         member_str = (
             f"{member_role.mention} — *Our core members, who wear our tag with pride and honor!*"
@@ -158,6 +172,12 @@ class RankDisplay(commands.Cog):
         embed.add_field(
             name="🛡️ Staff Hierarchy (Highest ➔ Lowest)",
             value=staff_formatted,
+            inline=False,
+        )
+        
+        embed.add_field(
+            name="🔱 Elite Hierarchy (Highest ➔ Lowest)",
+            value=elite_desc + elite_formatted,
             inline=False,
         )
 
