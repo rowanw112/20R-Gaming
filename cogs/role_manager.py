@@ -913,6 +913,7 @@ class RoleManager(commands.Cog):
             gained_elite = next((r for r in after.roles if r.id in added_role_ids and r.id in elite_role_ids), None)
             gained_member = next((r for r in after.roles if r.id in added_role_ids and r.id == member_role_id), None)
             lost_member = member_role_id in removed_role_ids if member_role_id else False
+            lost_recruit = recruit_role_id in removed_role_ids if recruit_role_id else False
 
             # -----------------------------------------------------------------
             # BRANCH 1: GAINED BASIC ROLE (Visitor, Friend, Stranger)
@@ -1004,9 +1005,9 @@ class RoleManager(commands.Cog):
                             roles_to_remove.append(r)
 
             # -----------------------------------------------------------------
-            # BRANCH 7: MEMBER STATUS REMOVED (Full Demotion to Visitor)
+            # BRANCH 7: MEMBER OR RECRUIT STATUS REMOVED (Full Demotion to Visitor)
             # -----------------------------------------------------------------
-            elif lost_member:
+            elif lost_member or (lost_recruit and member_role_id not in user_role_ids):
                 # 1. Strip all official ranks, staff roles, elite roles, and other basic roles
                 for r in after.roles:
                     if r.id in rank_role_ids or r.id in staff_role_ids or r.id in elite_role_ids or r.id in all_basic_ids or r.id == recruit_role_id:
