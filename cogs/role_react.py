@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -61,7 +62,6 @@ class RoleToggleButton(discord.ui.Button):
         self.role_id = role_id
 
     async def callback(self, interaction: discord.Interaction):
-        # Acknowledges button interaction silently without posting messages or popups
         await interaction.response.defer()
         
         guild = interaction.guild
@@ -142,26 +142,38 @@ class ReactForRoles(commands.Cog):
 
             game_name = info.get("game_name") or role.name
             button_name = info.get("button_name")
+            short_name = info.get("short_name")
 
-            # STRICT BUTTON LOGIC: Use button_name if set, otherwise game_name ONLY (short_name ignored)
             label = button_name if button_name else game_name
 
-            # 1. Check if an explicit emoji override was saved in the database
+            # Priority 1: Custom set via command (Database override)
             emoji_obj = info.get("emoji")
 
-            # 2. If not, automatically grab the icon/emoji directly from the Discord role settings
             if not emoji_obj and role.display_icon:
+                # Catch native unicode emojis (like 🎮)
                 if isinstance(role.display_icon, str):
-                    # It is a standard unicode emoji
                     emoji_obj = role.display_icon
                 else:
-                    # Discord converted the custom server emoji into an image Asset.
-                    # We will do a smart search through the server's emojis to find the matching one!
-                    clean_name = label.replace(" ", "").replace("-", "").lower()
+                    # Priority 2 & 3: Clean up strings for strict exact matching
+                    clean_label = re.sub(r"[^a-zA-Z0-9]", "", label).lower()
+                    clean_short = re.sub(r"[^a-zA-Z0-9]", "", short_name).lower() if short_name else None
+
+                    # Priority 2: Full name exact search
                     for e in guild.emojis:
-                        if e.name.lower() in clean_name or clean_name in e.name.lower():
+                        clean_e = re.sub(r"[^a-zA-Z0-9]", "", e.name).lower()
+                        if clean_e == clean_label:
                             emoji_obj = e
                             break
+
+                    # Priority 3: Shortname exact search
+                    if not emoji_obj and clean_short:
+                        for e in guild.emojis:
+                            clean_e = re.sub(r"[^a-zA-Z0-9]", "", e.name).lower()
+                            if clean_e == clean_short:
+                                emoji_obj = e
+                                break
+                    
+                    # Priority 4: Fails gracefully (emoji_obj remains None)
 
             return {
                 "name": label,
@@ -169,7 +181,6 @@ class ReactForRoles(commands.Cog):
                 "emoji": emoji_obj,
             }
 
-        # 1. Process Active Hub Divisions
         if isinstance(division_records, list):
             for info in division_records:
                 entry = build_item_entry(info)
@@ -177,7 +188,6 @@ class ReactForRoles(commands.Cog):
                     divisions_list.append(entry)
                     processed_role_ids.add(entry["role_id"])
 
-        # 2. Process Legacy Divisions
         if isinstance(legacy_records, list):
             for info in legacy_records:
                 entry = build_item_entry(info)
@@ -185,7 +195,6 @@ class ReactForRoles(commands.Cog):
                     divisions_list.append(entry)
                     processed_role_ids.add(entry["role_id"])
 
-        # 3. Process Casual Games
         if isinstance(casual_records, list):
             for info in casual_records:
                 entry = build_item_entry(info)
@@ -193,7 +202,6 @@ class ReactForRoles(commands.Cog):
                     casuals_list.append(entry)
                     processed_role_ids.add(entry["role_id"])
 
-        # Deploy Gaming Divisions Embeds
         div_messages = guild_cfg.get("react_div_message_ids", [])
         new_div_msg_ids = await self._deploy_section_embeds(
             guild=guild,
@@ -206,7 +214,6 @@ class ReactForRoles(commands.Cog):
             button_style=discord.ButtonStyle.danger,
         )
 
-        # Deploy Casual Games Embeds
         casual_messages = guild_cfg.get("react_casual_message_ids", [])
         new_casual_msg_ids = await self._deploy_section_embeds(
             guild=guild,
@@ -320,9 +327,6 @@ class ReactForRoles(commands.Cog):
 
         return new_msg_ids
 
-    # -------------------------------------------------------------------------
-    # SLASH COMMANDS
-    # -------------------------------------------------------------------------
     @app_commands.command(
         name="set_react_channel",
         description="Set the channel to maintain live Gaming Division & Casual reaction role button embeds.",

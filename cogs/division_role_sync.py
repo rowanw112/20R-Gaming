@@ -44,7 +44,7 @@ class DivisionRoleSync(commands.Cog):
         cfg = load_role_sync_config(guild.id)
         guild_cfg = cfg.get(str(guild.id), {})
 
-        if isinstance(guild_cfg, int):  # Migration check for old config format
+        if isinstance(guild_cfg, int):
             guild_cfg = {"channel_id": guild_cfg, "message_id": None}
 
         chan_id = guild_cfg.get("channel_id")
@@ -82,7 +82,8 @@ class DivisionRoleSync(commands.Cog):
             div = guild.get_role(r.get("member_role_id"))
             pub_str = pub.mention if pub else "`Unknown`"
             div_str = div.mention if div else "`Unknown`"
-            return f"• **{r.get('game_name')}**: {pub_str} ➔ {div_str}"
+            emoji_str = f" {r.get('emoji')}" if r.get('emoji') else ""
+            return f"• **{r.get('game_name')}**{emoji_str}: {pub_str} ➔ {div_str}"
 
         # 1. Active Hub Divisions
         hub_open = [format_record(r) for r in hub_records if not r.get("is_restrictive", False)]
@@ -118,7 +119,6 @@ class DivisionRoleSync(commands.Cog):
 
         embed.set_footer(text="Auto-updates live when divisions are created, updated, or removed.")
 
-        # Update existing message or post a new pinned dashboard
         if msg_id:
             try:
                 msg = await channel.fetch_message(msg_id)
@@ -188,20 +188,17 @@ class DivisionRoleSync(commands.Cog):
             has_div_role = div_role_id in user_role_ids
             is_restrictive = record.get("is_restrictive", False)
 
-            # 1. ADD ROLE LOGIC (Only for Open Divisions if user has official rank and game role)
             if is_official and not is_restrictive:
                 if has_game_role and not has_div_role:
                     div_role = guild.get_role(div_role_id)
                     if div_role:
                         roles_to_add.append(div_role)
 
-            # 2. REMOVE ROLE LOGIC (If user lost the public game role OR lost official rank status)
             if has_div_role and (not has_game_role or not is_official):
                 div_role = guild.get_role(div_role_id)
                 if div_role:
                     roles_to_remove.append(div_role)
 
-        # Apply Additions
         if roles_to_add:
             try:
                 await member.add_roles(*roles_to_add, reason="Auto-synced Division Role(s) Granted")
@@ -210,7 +207,6 @@ class DivisionRoleSync(commands.Cog):
             except discord.HTTPException as e:
                 logger.error(f"[RoleSync] Failed to add division roles to {member.display_name}: {e}")
 
-        # Apply Removals
         if roles_to_remove:
             try:
                 await member.remove_roles(*roles_to_remove, reason="Auto-synced Division Role(s) Removed (Lost Public Role/Rank)")
@@ -221,8 +217,7 @@ class DivisionRoleSync(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        """Fires whenever roles change on a user."""
-        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        if getattr(self.bot, "is_passive", False): return 
         
         before_role_ids = {r.id for r in before.roles}
         after_role_ids = {r.id for r in after.roles}
@@ -230,9 +225,6 @@ class DivisionRoleSync(commands.Cog):
         if before_role_ids != after_role_ids:
             await self.sync_member_division_roles(after)
 
-    # -------------------------------------------------------------------------
-    # CONFIG & LEGACY MANAGEMENT COMMANDS
-    # -------------------------------------------------------------------------
     @app_commands.command(
         name="set_role_sync_log_channel",
         description="Set the channel where the live Division Mapping Dashboard is displayed.",
@@ -281,78 +273,138 @@ class DivisionRoleSync(commands.Cog):
         )
 
     @app_commands.command(
-        name="remove_legacy_division",
-        description="Remove a legacy division by its exact name to stop auto-syncing.",
+        name="add_legacy_division",
+        description="Register an existing legacy division into the auto-role sync system.",
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def remove_legacy_division(
-        self, interaction: discord.Interaction, division_name: str
+    @app_commands.describe(
+        division_name="Name of the division",
+        public_role="The public game role",
+        division_role="The division member role",
+        emoji="Custom server emoji or unicode emoji for the button (Optional)",
+        is_restrictive="Is this application only? (Default: False)"
+    )
+    async def add_legacy_division(
+        self,
+        interaction: discord.Interaction,
+        division_name: str,
+        public_role: discord.Role,
+        division_role: discord.Role,
+        emoji: str = None,
+        is_restrictive: bool = False,
     ):
         await interaction.response.defer(ephemeral=True)
+
         records = load_legacy_division_records(interaction.guild.id)
 
-        # Case-insensitive match by division name
-        original_count = len(records)
-        records = [r for r in records if r.get("game_name", "").lower() != division_name.strip().lower()]
-
-        if len(records) == original_count:
-            await interaction.followup.send(
-                f"❌ Could not find a legacy division named **{division_name}** in the database. (Check spelling/capitalization)", 
-                ephemeral=True
-            )
-            return
+        existing = next((r for r in records if r.get("member_role_id") == division_role.id), None)
+        if existing:
+            existing["game_role_id"] = public_role.id
+            existing["is_restrictive"] = is_restrictive
+            existing["game_name"] = division_name
+            if emoji: existing["emoji"] = emoji
+            msg = f"🔄 Updated existing legacy record for **{division_name}**."
+        else:
+            records.append({
+                "game_name": division_name,
+                "game_role_id": public_role.id,
+                "member_role_id": division_role.id,
+                "emoji": emoji,
+                "is_restrictive": is_restrictive,
+            })
+            msg = f"✅ Registered new legacy division **{division_name}**."
 
         save_legacy_division_records(interaction.guild.id, records)
         
-        # Update the dashboards
         await self.update_sync_dashboard(interaction.guild)
+
         react_cog = self.bot.get_cog("ReactForRoles")
         if react_cog:
             await react_cog.update_react_embeds(interaction.guild)
 
-        await interaction.followup.send(
-            f"✅ Successfully removed legacy division **{division_name}** from the sync database and dashboards!", 
-            ephemeral=True
-        )
+        status_type = "🔒 Restrictive (Application Only)" if is_restrictive else "🔓 Open (Auto-Synced)"
+
+        embed = discord.Embed(title="📜 Legacy Division Registered", color=discord.Color.blue())
+        embed.add_field(name="Division Name", value=division_name, inline=False)
+        embed.add_field(name="Public Role", value=public_role.mention, inline=True)
+        embed.add_field(name="Division Role", value=division_role.mention, inline=True)
+        embed.add_field(name="Access Mode", value=status_type, inline=False)
+        if emoji:
+            embed.add_field(name="Emoji", value=emoji, inline=True)
+        embed.set_footer(text="Mapping and Reaction Role dashboards updated automatically.")
+
+        await interaction.followup.send(content=msg, embed=embed, ephemeral=True)
 
     @app_commands.command(
-        name="remove_legacy_division",
-        description="Remove a legacy division by its exact name to stop auto-syncing.",
+        name="add_legacy_casual",
+        description="Register an existing legacy casual game into the reaction roles dashboard.",
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def remove_legacy_division(
-        self, interaction: discord.Interaction, division_name: str
+    @app_commands.describe(
+        game_name="The name of the casual game (Required)",
+        casual_role="The existing role for this casual game (Required)",
+        emoji="Custom server emoji or unicode emoji for the button (Optional)",
+        button_name="Custom button label for reaction role embed (Optional)",
+    )
+    async def add_legacy_casual(
+        self,
+        interaction: discord.Interaction,
+        game_name: str,
+        casual_role: discord.Role,
+        emoji: str = None,
+        button_name: str = None,
     ):
         await interaction.response.defer(ephemeral=True)
-        records = load_legacy_division_records(interaction.guild.id)
+        guild = interaction.guild
 
-        # Case-insensitive match by division name
-        original_count = len(records)
-        records = [r for r in records if r.get("game_name", "").lower() != division_name.strip().lower()]
-
-        if len(records) == original_count:
-            await interaction.followup.send(
-                f"❌ Could not find a legacy division named **{division_name}** in the database. (Check spelling/capitalization)", 
-                ephemeral=True
-            )
-            return
-
-        save_legacy_division_records(interaction.guild.id, records)
+        casual_records = load_casual_records(guild.id)
         
-        # Update the dashboards
-        await self.update_sync_dashboard(interaction.guild)
+        existing = next((c for c in casual_records if c.get("role_id") == casual_role.id), None)
+        
+        def format_game_name(text: str) -> str:
+            if not text: return ""
+            return " ".join([w if w.isupper() else w.capitalize() for w in text.strip().split()])
+
+        clean_game = format_game_name(game_name)
+        clean_button = format_game_name(button_name) if button_name else None
+
+        if existing:
+            existing["game_name"] = clean_game
+            existing["button_name"] = clean_button
+            if emoji: existing["emoji"] = emoji
+            msg = f"🔄 Updated existing legacy casual record for **{clean_game}**."
+        else:
+            casual_records.append({
+                "game_name": clean_game,
+                "button_name": clean_button,
+                "role_id": casual_role.id,
+                "emoji": emoji,
+                "thread_id": None,
+                "is_casual": True,
+            })
+            msg = f"✅ Registered new legacy casual game **{clean_game}**."
+
+        save_casual_records(guild.id, casual_records)
+
         react_cog = self.bot.get_cog("ReactForRoles")
         if react_cog:
-            await react_cog.update_react_embeds(interaction.guild)
+            await react_cog.update_react_embeds(guild)
 
-        await interaction.followup.send(
-            f"✅ Successfully removed legacy division **{division_name}** from the sync database and dashboards!", 
-            ephemeral=True
-        )
+        embed = discord.Embed(title="🕹️ Legacy Casual Game Registered", color=discord.Color.blurple())
+        embed.add_field(name="Game Name", value=clean_game, inline=True)
+        embed.add_field(name="Role", value=casual_role.mention, inline=True)
+        if clean_button:
+            embed.add_field(name="Button Name", value=clean_button, inline=False)
+        if emoji:
+            embed.add_field(name="Emoji", value=emoji, inline=True)
+            
+        embed.set_footer(text="Reaction roles dashboard has been updated automatically.")
+
+        await interaction.followup.send(content=msg, embed=embed, ephemeral=True)
 
     @app_commands.command(
         name="update_legacy_division",
-        description="Update an existing legacy division's name, roles, or access mode.",
+        description="Update an existing legacy division's name, roles, emoji, or access mode.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
@@ -360,6 +412,7 @@ class DivisionRoleSync(commands.Cog):
         new_name="New name for the division (Leave blank to keep current)",
         public_role="New public game role (Leave blank to keep current)",
         division_role="New division member role (Leave blank to keep current)",
+        emoji="New custom emoji for the button (Leave blank to keep current)",
         is_restrictive="Change access mode? (Optional)"
     )
     async def update_legacy_division(
@@ -369,30 +422,30 @@ class DivisionRoleSync(commands.Cog):
         new_name: str = None,
         public_role: discord.Role = None,
         division_role: discord.Role = None,
+        emoji: str = None,
         is_restrictive: bool = None,
     ):
         await interaction.response.defer(ephemeral=True)
         records = load_legacy_division_records(interaction.guild.id)
 
-        # Find the record by name (case-insensitive)
         record = next((r for r in records if r.get("game_name", "").lower() == current_name.strip().lower()), None)
         if not record:
             await interaction.followup.send(f"❌ Could not find a legacy division named **{current_name}**.", ephemeral=True)
             return
 
-        # Apply updates only for fields that were provided
         if new_name:
             record["game_name"] = new_name.strip()
         if public_role:
             record["game_role_id"] = public_role.id
         if division_role:
             record["member_role_id"] = division_role.id
+        if emoji:
+            record["emoji"] = emoji
         if is_restrictive is not None:
             record["is_restrictive"] = is_restrictive
 
         save_legacy_division_records(interaction.guild.id, records)
 
-        # Refresh dashboards
         await self.update_sync_dashboard(interaction.guild)
         react_cog = self.bot.get_cog("ReactForRoles")
         if react_cog:
@@ -405,13 +458,14 @@ class DivisionRoleSync(commands.Cog):
 
     @app_commands.command(
         name="update_legacy_casual",
-        description="Update an existing legacy casual game's name, button label, or role.",
+        description="Update an existing legacy casual game's name, emoji, button label, or role.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         current_name="The exact current name of the casual game to update",
         new_name="New name for the casual game (Leave blank to keep current)",
         casual_role="New role for this casual game (Leave blank to keep current)",
+        emoji="New custom emoji for the button (Leave blank to keep current)",
         button_name="New custom button label (Leave blank to keep current)",
     )
     async def update_legacy_casual(
@@ -420,12 +474,12 @@ class DivisionRoleSync(commands.Cog):
         current_name: str,
         new_name: str = None,
         casual_role: discord.Role = None,
+        emoji: str = None,
         button_name: str = None,
     ):
         await interaction.response.defer(ephemeral=True)
         casual_records = load_casual_records(interaction.guild.id)
 
-        # Find the casual record by name (case-insensitive)
         record = next((c for c in casual_records if c.get("game_name", "").lower() == current_name.strip().lower()), None)
         if not record:
             await interaction.followup.send(f"❌ Could not find a legacy casual game named **{current_name}**.", ephemeral=True)
@@ -435,18 +489,52 @@ class DivisionRoleSync(commands.Cog):
             record["game_name"] = new_name.strip()
         if casual_role:
             record["role_id"] = casual_role.id
+        if emoji:
+            record["emoji"] = emoji
         if button_name is not None:
             record["button_name"] = button_name.strip() if button_name else None
 
         save_casual_records(interaction.guild.id, casual_records)
 
-        # Refresh React for Roles dashboard
         react_cog = self.bot.get_cog("ReactForRoles")
         if react_cog:
             await react_cog.update_react_embeds(interaction.guild)
 
         await interaction.followup.send(
             f"✅ Successfully updated legacy casual game **{record.get('game_name')}** on the dashboard!",
+            ephemeral=True
+        )
+
+    @app_commands.command(
+        name="remove_legacy_division",
+        description="Remove a legacy division by its exact name to stop auto-syncing.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def remove_legacy_division(
+        self, interaction: discord.Interaction, division_name: str
+    ):
+        await interaction.response.defer(ephemeral=True)
+        records = load_legacy_division_records(interaction.guild.id)
+
+        original_count = len(records)
+        records = [r for r in records if r.get("game_name", "").lower() != division_name.strip().lower()]
+
+        if len(records) == original_count:
+            await interaction.followup.send(
+                f"❌ Could not find a legacy division named **{division_name}** in the database.", 
+                ephemeral=True
+            )
+            return
+
+        save_legacy_division_records(interaction.guild.id, records)
+        
+        await self.update_sync_dashboard(interaction.guild)
+        react_cog = self.bot.get_cog("ReactForRoles")
+        if react_cog:
+            await react_cog.update_react_embeds(interaction.guild)
+
+        await interaction.followup.send(
+            f"✅ Successfully removed legacy division **{division_name}** from the database and dashboards!", 
             ephemeral=True
         )
 
@@ -482,60 +570,6 @@ class DivisionRoleSync(commands.Cog):
             ephemeral=True
         )
 
-
-    @app_commands.command(
-        name="add_legacy_division",
-        description="Register an existing legacy division into the auto-role sync system.",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def add_legacy_division(
-        self,
-        interaction: discord.Interaction,
-        division_name: str,
-        public_role: discord.Role,
-        division_role: discord.Role,
-        is_restrictive: bool = False,
-    ):
-        await interaction.response.defer(ephemeral=True)
-
-        records = load_legacy_division_records(interaction.guild.id)
-
-        existing = next((r for r in records if r.get("member_role_id") == division_role.id), None)
-        if existing:
-            existing["game_role_id"] = public_role.id
-            existing["is_restrictive"] = is_restrictive
-            existing["game_name"] = division_name
-            msg = f"🔄 Updated existing legacy record for **{division_name}**."
-        else:
-            records.append({
-                "game_name": division_name,
-                "game_role_id": public_role.id,
-                "member_role_id": division_role.id,
-                "is_restrictive": is_restrictive,
-            })
-            msg = f"✅ Registered new legacy division **{division_name}**."
-
-        save_legacy_division_records(interaction.guild.id, records)
-        
-        # 1. Update the Mapping Dashboard
-        await self.update_sync_dashboard(interaction.guild)
-
-        # 2. Force the Reaction Roles Dashboard to update instantly
-        react_cog = self.bot.get_cog("ReactForRoles")
-        if react_cog:
-            await react_cog.update_react_embeds(interaction.guild)
-
-        status_type = "🔒 Restrictive (Application Only)" if is_restrictive else "🔓 Open (Auto-Synced)"
-
-        embed = discord.Embed(title="📜 Legacy Division Registered", color=discord.Color.blue())
-        embed.add_field(name="Division Name", value=division_name, inline=False)
-        embed.add_field(name="Public Role", value=public_role.mention, inline=True)
-        embed.add_field(name="Division Role", value=division_role.mention, inline=True)
-        embed.add_field(name="Access Mode", value=status_type, inline=False)
-        embed.set_footer(text="Mapping and Reaction Role dashboards updated automatically.")
-
-        await interaction.followup.send(content=msg, embed=embed, ephemeral=True)
-
     @app_commands.command(
         name="list_legacy_divisions",
         description="List all registered legacy divisions.",
@@ -552,9 +586,10 @@ class DivisionRoleSync(commands.Cog):
             pub = interaction.guild.get_role(r.get("game_role_id"))
             div = interaction.guild.get_role(r.get("member_role_id"))
             mode = "🔒 Restrictive" if r.get("is_restrictive") else "🔓 Open"
+            emoji_str = f" {r.get('emoji')}" if r.get('emoji') else ""
 
             embed.add_field(
-                name=f"🎮 {r.get('game_name')}",
+                name=f"🎮 {r.get('game_name')}{emoji_str}",
                 value=f"• **Public:** {pub.mention if pub else '`Unknown`'}\n"
                       f"• **Division:** {div.mention if div else '`Unknown`'}\n"
                       f"• **Status:** {mode}",
@@ -562,70 +597,6 @@ class DivisionRoleSync(commands.Cog):
             )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(
-        name="add_legacy_casual",
-        description="Register an existing legacy casual game into the reaction roles dashboard.",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(
-        game_name="The name of the casual game (Required)",
-        casual_role="The existing role for this casual game (Required)",
-        button_name="Custom button label for reaction role embed (Optional)",
-    )
-    async def add_legacy_casual(
-        self,
-        interaction: discord.Interaction,
-        game_name: str,
-        casual_role: discord.Role,
-        button_name: str = None,
-    ):
-        await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-
-        casual_records = load_casual_records(guild.id)
-        
-        # Check if this role is already registered
-        existing = next((c for c in casual_records if c.get("role_id") == casual_role.id), None)
-        
-        # Helper to format the name properly (capitalizes first letters, keeps acronyms)
-        def format_game_name(text: str) -> str:
-            if not text: return ""
-            return " ".join([w if w.isupper() else w.capitalize() for w in text.strip().split()])
-
-        clean_game = format_game_name(game_name)
-        clean_button = format_game_name(button_name) if button_name else None
-
-        if existing:
-            existing["game_name"] = clean_game
-            existing["button_name"] = clean_button
-            msg = f"🔄 Updated existing legacy casual record for **{clean_game}**."
-        else:
-            casual_records.append({
-                "game_name": clean_game,
-                "button_name": clean_button,
-                "role_id": casual_role.id,
-                "thread_id": None,  # Explicitly None to tell the bot this has no private thread
-                "is_casual": True,
-            })
-            msg = f"✅ Registered new legacy casual game **{clean_game}**."
-
-        save_casual_records(guild.id, casual_records)
-
-        # Force the Reaction Roles Dashboard to update instantly
-        react_cog = self.bot.get_cog("ReactForRoles")
-        if react_cog:
-            await react_cog.update_react_embeds(guild)
-
-        embed = discord.Embed(title="🕹️ Legacy Casual Game Registered", color=discord.Color.blurple())
-        embed.add_field(name="Game Name", value=clean_game, inline=True)
-        embed.add_field(name="Role", value=casual_role.mention, inline=True)
-        if clean_button:
-            embed.add_field(name="Button Name", value=clean_button, inline=False)
-            
-        embed.set_footer(text="Reaction roles dashboard has been updated automatically.")
-
-        await interaction.followup.send(content=msg, embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
