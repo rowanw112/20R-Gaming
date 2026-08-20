@@ -14,12 +14,15 @@ class RoleAuditor(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def export_roster(self, interaction: discord.Interaction):
-        # We must defer immediately because processing 8,000 users will take a few seconds
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
 
         # Create an in-memory string buffer for the CSV data
         buffer = io.StringIO()
+        
+        # Write the UTF-8 BOM (Byte Order Mark) so Excel reads special characters/emojis correctly!
+        buffer.write('\ufeff')
+        
         writer = csv.writer(buffer)
 
         # Write the header row
