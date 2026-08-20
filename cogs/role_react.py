@@ -146,12 +146,22 @@ class ReactForRoles(commands.Cog):
             # STRICT BUTTON LOGIC: Use button_name if set, otherwise game_name ONLY (short_name ignored)
             label = button_name if button_name else game_name
 
-            emoji_str = info.get("emoji")
-            emoji_obj = None
-            if emoji_str:
-                emoji_obj = emoji_str
-            elif role.display_icon and str(role.display_icon).startswith("<"):
-                emoji_obj = str(role.display_icon)
+            # 1. Check if an explicit emoji override was saved in the database
+            emoji_obj = info.get("emoji")
+
+            # 2. If not, automatically grab the icon/emoji directly from the Discord role settings
+            if not emoji_obj and role.display_icon:
+                if isinstance(role.display_icon, str):
+                    # It is a standard unicode emoji
+                    emoji_obj = role.display_icon
+                else:
+                    # Discord converted the custom server emoji into an image Asset.
+                    # We will do a smart search through the server's emojis to find the matching one!
+                    clean_name = label.replace(" ", "").replace("-", "").lower()
+                    for e in guild.emojis:
+                        if e.name.lower() in clean_name or clean_name in e.name.lower():
+                            emoji_obj = e
+                            break
 
             return {
                 "name": label,
