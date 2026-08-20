@@ -184,6 +184,11 @@ class DivisionRoleSync(commands.Cog):
             if not game_role_id or not div_role_id:
                 continue
 
+            # 🛑 THE FIX: If the roles are identical, skip auto-syncing completely.
+            # This allows you to use a single role just to get it on the dashboard!
+            if game_role_id == div_role_id:
+                continue
+
             has_game_role = game_role_id in user_role_ids
             has_div_role = div_role_id in user_role_ids
             is_restrictive = record.get("is_restrictive", False)
@@ -215,6 +220,7 @@ class DivisionRoleSync(commands.Cog):
             except discord.HTTPException as e:
                 logger.error(f"[RoleSync] Failed to remove division roles from {member.display_name}: {e}")
 
+                
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         if getattr(self.bot, "is_passive", False): return 
