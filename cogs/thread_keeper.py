@@ -167,51 +167,12 @@ class ThreadKeeper(commands.Cog):
         return False
 
     # -------------------------------------------------------------------------
-    # 1. NEW THREAD LISTENER (INTERACTIVE PROMPT)
-    # -------------------------------------------------------------------------
-    @commands.Cog.listener()
-    async def on_thread_create(self, thread: discord.Thread):
-        """Fires when a thread is created; posts the pinned keep-alive status panel."""
-        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
-        await asyncio.sleep(1.5)
-
-        guild = thread.guild
-        if not guild:
-            return
-
-        # 1. If created by the bot or already mapped to a role, skip prompt (handled automatically)
-        if thread.owner_id == self.bot.user.id:
-            return
-
-        tracked_ids = self.get_tracked_thread_ids(guild)
-        if thread.id in tracked_ids:
-            return
-
-        # 2. Post the interactive control panel and pin it
-        view = ThreadKeepAlivePromptView()
-        embed = view.build_embed(is_kept_alive=False)
-
-        try:
-            msg = await thread.send(content=f"<@{thread.owner_id}>", embed=embed, view=view)
-            await msg.pin(reason="ThreadKeeper Status Panel")
-            
-            # Instantly delete the system message "Bot pinned a message" to keep chat clean
-            await asyncio.sleep(0.5)
-            async for sys_msg in thread.history(limit=5):
-                if sys_msg.type == discord.MessageType.pins_add and sys_msg.author == self.bot.user:
-                    await sys_msg.delete()
-                    break
-                    
-        except (discord.Forbidden, discord.HTTPException):
-            pass
-
-    # -------------------------------------------------------------------------
-    # 2. REAL-TIME UNARCHIVE EVENT LISTENER
+    # 1. REAL-TIME UNARCHIVE EVENT LISTENER
     # -------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_thread_update(self, before: discord.Thread, after: discord.Thread):
         """Immediately unarchives tracked threads if they become archived."""
-        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        if getattr(self.bot, "is_passive", False): return 
         if not before.archived and after.archived:
             guild = after.guild
             if not guild:
@@ -231,12 +192,12 @@ class ThreadKeeper(commands.Cog):
                 logger.warning(f"Could not auto-unarchive tracked thread #{after.name}: {e}")
 
     # -------------------------------------------------------------------------
-    # 3. PERIODIC TRACKED-THREAD SWEEP (Runs Hourly)
+    # 2. PERIODIC TRACKED-THREAD SWEEP (Runs Hourly)
     # -------------------------------------------------------------------------
     @tasks.loop(hours=1)
     async def sweep_tracked_threads(self):
         """Checks ONLY tracked keep-alive threads to ensure none were missed."""
-        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        if getattr(self.bot, "is_passive", False): return 
         for guild in self.bot.guilds:
             tracked_ids = self.get_tracked_thread_ids(guild)
             if not tracked_ids:
@@ -264,15 +225,15 @@ class ThreadKeeper(commands.Cog):
     @sweep_tracked_threads.before_loop
     async def before_sweep(self):
         await self.bot.wait_until_ready()
-        await asyncio.sleep(300)  # Wait 5 minutes after startup before running first sweep
+        await asyncio.sleep(300) 
 
     # -------------------------------------------------------------------------
-    # 4. VISUAL BUMP LOOP (Runs every 12 hours)
+    # 3. VISUAL BUMP LOOP (Runs every 12 hours)
     # -------------------------------------------------------------------------
     @tasks.loop(hours=12)
     async def bump_inactive_threads(self):
         """Maintains UI visibility by bumping tracked threads before the 1-week timeout."""
-        if getattr(self.bot, "is_passive", False): return # 🛑 Passive Mode Check
+        if getattr(self.bot, "is_passive", False): return 
         now = discord.utils.utcnow()
         bump_threshold = now - timedelta(days=6, hours=12)
 
@@ -336,8 +297,28 @@ class ThreadKeeper(commands.Cog):
         await self.bot.wait_until_ready()
 
     # -------------------------------------------------------------------------
-    # 5. MANAGEMENT COMMANDS
+    # 4. MANAGEMENT COMMANDS
     # -------------------------------------------------------------------------
+    @app_commands.command(
+        name="thread_keeper_panel",
+        description="Spawns the Keep-Alive control panel in the current thread."
+    )
+    @app_commands.checks.has_permissions(manage_threads=True)
+    async def thread_keeper_panel(self, interaction: discord.Interaction):
+        thread = interaction.channel
+        if not isinstance(thread, discord.Thread):
+            await interaction.response.send_message("❌ This command can only be used inside a thread.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        tracked_ids = self.get_tracked_thread_ids(guild)
+        is_kept_alive = thread.id in tracked_ids
+
+        view = ThreadKeepAlivePromptView()
+        embed = view.build_embed(is_kept_alive=is_kept_alive)
+
+        await interaction.response.send_message(embed=embed, view=view)
+
     @app_commands.command(
         name="test_thread_bump",
         description="Force a silent visibility bump and enforce 1-week inactivity on a thread."
