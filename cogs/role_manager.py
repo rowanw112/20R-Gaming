@@ -871,7 +871,6 @@ class RoleManager(commands.Cog):
         if before.roles == after.roles:
             return
 
-        # Identify added and removed roles
         added_roles = [r for r in after.roles if r not in before.roles]
         removed_roles = [r for r in before.roles if r not in after.roles]
 
@@ -879,35 +878,51 @@ class RoleManager(commands.Cog):
         added_roles = [r for r in added_roles if "───" not in r.name]
         removed_roles = [r for r in removed_roles if "───" not in r.name]
 
-        # If only category roles were changed, drop the event silently
         if not added_roles and not removed_roles:
             return
 
-        # Give Discord's API 3 full seconds to write the event to the Audit Log
+        # Separate LFG roles from normal roles to prevent API Rate Limiting
+        lfg_added = [r for r in added_roles if "LFG" in r.name]
+        lfg_removed = [r for r in removed_roles if "LFG" in r.name]
+        
+        normal_added = [r for r in added_roles if "LFG" not in r.name]
+        normal_removed = [r for r in removed_roles if "LFG" not in r.name]
+
+        # 1. Log LFG Roles INSTANTLY (Bypassing Audit Log to prevent API spam)
+        if lfg_added:
+            role_names = ", ".join([r.name for r in lfg_added])
+            logger.info(f"[Audit] ➕ LFG Hub / Activity ADDED role(s) [{role_names}] to {after.display_name}")
+        
+        if lfg_removed:
+            role_names = ", ".join([r.name for r in lfg_removed])
+            logger.info(f"[Audit] ➖ LFG Hub / Activity REMOVED role(s) [{role_names}] from {after.display_name}")
+
+        # If there are no normal roles to process, stop here before hitting the API
+        if not normal_added and not normal_removed:
+            return
+
+        # 2. Log Normal Roles (Requires Audit Log Check)
         await asyncio.sleep(3.0)
 
         actor = "Integration / Unknown"
         try:
-            # Fetch the most recent role update audit log for this specific user
             async for entry in after.guild.audit_logs(action=discord.AuditLogAction.member_role_update, limit=5):
                 if entry.target.id == after.id:
-                    # STRICT TIME CHECK: Only blame this user/bot if the log happened in the last 15 seconds
                     if (discord.utils.utcnow() - entry.created_at).total_seconds() < 15:
                         actor = f"{entry.user.name}"
                     break
         except discord.Forbidden:
             actor = "Missing Audit Log Perms"
 
-        # Log the filtered results
-        if added_roles:
-            role_names = ", ".join([r.name for r in added_roles])
+        if normal_added:
+            role_names = ", ".join([r.name for r in normal_added])
             logger.info(f"[Audit] ➕ {actor} ADDED role(s) [{role_names}] to {after.display_name}")
         
-        if removed_roles:
-            role_names = ", ".join([r.name for r in removed_roles])
+        if normal_removed:
+            role_names = ", ".join([r.name for r in normal_removed])
             logger.info(f"[Audit] ➖ {actor} REMOVED role(s) [{role_names}] from {after.display_name}")
 
-            
+
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Event-Driven Hierarchy Listener following the Flowchart logic strictly."""
