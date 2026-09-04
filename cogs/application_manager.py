@@ -414,6 +414,10 @@ class DenyReasonModal(discord.ui.Modal, title="Deny Membership Application"):
             except discord.HTTPException:
                 pass
 
+        # --- NEW LOGGING LINE HERE ---
+        logger.info(f"[ApplicationManager] ❌ {interaction.user.name} DENIED the application for {form_data.get('username', applicant_id)}. Reason: {self.reason.value}")
+        # -----------------------------
+
         await interaction.followup.send(
             "❌ Application denied, applicant notified via DM, and record logged!",
             ephemeral=True,
@@ -628,6 +632,10 @@ class ThreadReviewView(discord.ui.View):
 
         await _process_approval_roles(guild, applicant_id)
 
+        # --- NEW LOGGING LINE HERE ---
+        logger.info(f"[ApplicationManager] ✅ {interaction.user.name} APPROVED the thread application for {form_data.get('username', applicant_id)}.")
+        # -----------------------------
+
         await interaction.followup.send(
             "✅ Application approved, granted Recruit role, and logged!",
             ephemeral=True,
@@ -736,6 +744,10 @@ class ApplicationReviewView(discord.ui.View):
         applicant_id, form_data = self._parse_message_data(interaction.message)
 
         await _process_approval_roles(guild, applicant_id)
+        
+        # --- NEW LOGGING LINE HERE ---
+        logger.info(f"[ApplicationManager] ✅ {interaction.user.name} APPROVED the application for {form_data.get('username', applicant_id)}.")
+        # -----------------------------
 
         await interaction.followup.send(
             "✅ Application approved, granted Recruit role, and logged!",

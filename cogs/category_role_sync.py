@@ -84,18 +84,18 @@ class CategoryRoleSync(commands.Cog):
                 try:
                     await member.add_roles(*roles_to_add, reason="Auto-assigned Category Header Role(s)")
                     added_names = ", ".join([r.name for r in roles_to_add])
-                    logger.info(f"[CategorySync] Added category header(s) '{added_names}' to {member.display_name}")
+                    logger.debug(f"[CategorySync] Added category header(s) '{added_names}' to {member.display_name}")
                 except discord.HTTPException as e:
-                    logger.error(f"[CategorySync] Failed to add category roles to {member.display_name}: {e}")
+                    logger.debug(f"[CategorySync] Failed to add category roles to {member.display_name}: {e}")
 
             # Apply Removals
             if roles_to_remove:
                 try:
                     await member.remove_roles(*roles_to_remove, reason="Auto-removed unused Category Header Role(s)")
                     removed_names = ", ".join([r.name for r in roles_to_remove])
-                    logger.info(f"[CategorySync] Removed category header(s) '{removed_names}' from {member.display_name}")
+                    logger.debug(f"[CategorySync] Removed category header(s) '{removed_names}' from {member.display_name}")
                 except discord.HTTPException as e:
-                    logger.error(f"[CategorySync] Failed to remove category roles from {member.display_name}: {e}")
+                    logger.debug(f"[CategorySync] Failed to remove category roles from {member.display_name}: {e}")
 
         finally:
             self._processing_members.remove(member.id)

@@ -862,6 +862,49 @@ class RoleManager(commands.Cog):
             save_json(role.guild.id, cfg)
             await self.update_rank_dashboard(role.guild)
 
+    @commands.Cog.listener("on_member_update")
+    async def audit_role_changes(self, before: discord.Member, after: discord.Member):
+        """Dedicated listener to track WHO assigns/removes roles, ignoring categories."""
+        if getattr(self.bot, "is_passive", False): return
+        
+        # Ignore if roles haven't changed
+        if before.roles == after.roles:
+            return
+
+        # Identify added and removed roles
+        added_roles = [r for r in after.roles if r not in before.roles]
+        removed_roles = [r for r in before.roles if r not in after.roles]
+
+        # Filter out the category headers (roles containing ───)
+        added_roles = [r for r in added_roles if "───" not in r.name]
+        removed_roles = [r for r in removed_roles if "───" not in r.name]
+
+        # If only category roles were changed, drop the event silently
+        if not added_roles and not removed_roles:
+            return
+
+        # Discord audit logs can have a slight delay, sleep briefly to ensure it populates
+        await asyncio.sleep(1.0)
+
+        actor = "Unknown/Bot System"
+        try:
+            # Fetch the most recent role update audit log for this specific user
+            async for entry in after.guild.audit_logs(action=discord.AuditLogAction.member_role_update, limit=3):
+                if entry.target.id == after.id:
+                    actor = f"{entry.user.name}"
+                    break
+        except discord.Forbidden:
+            actor = "Missing Audit Log Perms"
+
+        # Log the filtered results
+        if added_roles:
+            role_names = ", ".join([r.name for r in added_roles])
+            logger.info(f"[Audit] ➕ {actor} ADDED role(s) [{role_names}] to {after.display_name}")
+        
+        if removed_roles:
+            role_names = ", ".join([r.name for r in removed_roles])
+            logger.info(f"[Audit] ➖ {actor} REMOVED role(s) [{role_names}] from {after.display_name}")
+
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Event-Driven Hierarchy Listener following the Flowchart logic strictly."""
