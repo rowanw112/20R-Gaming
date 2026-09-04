@@ -883,15 +883,17 @@ class RoleManager(commands.Cog):
         if not added_roles and not removed_roles:
             return
 
-        # Discord audit logs can have a slight delay, sleep briefly to ensure it populates
-        await asyncio.sleep(1.0)
+        # Give Discord's API 3 full seconds to write the event to the Audit Log
+        await asyncio.sleep(3.0)
 
-        actor = "Unknown/Bot System"
+        actor = "Integration / Unknown"
         try:
             # Fetch the most recent role update audit log for this specific user
-            async for entry in after.guild.audit_logs(action=discord.AuditLogAction.member_role_update, limit=3):
+            async for entry in after.guild.audit_logs(action=discord.AuditLogAction.member_role_update, limit=5):
                 if entry.target.id == after.id:
-                    actor = f"{entry.user.name}"
+                    # STRICT TIME CHECK: Only blame this user/bot if the log happened in the last 15 seconds
+                    if (discord.utils.utcnow() - entry.created_at).total_seconds() < 15:
+                        actor = f"{entry.user.name}"
                     break
         except discord.Forbidden:
             actor = "Missing Audit Log Perms"
@@ -905,6 +907,7 @@ class RoleManager(commands.Cog):
             role_names = ", ".join([r.name for r in removed_roles])
             logger.info(f"[Audit] ➖ {actor} REMOVED role(s) [{role_names}] from {after.display_name}")
 
+            
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Event-Driven Hierarchy Listener following the Flowchart logic strictly."""
