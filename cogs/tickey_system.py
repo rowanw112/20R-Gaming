@@ -78,40 +78,43 @@ def build_panel_embed(system_name: str, thumbnail_url: str = None) -> discord.Em
 # TICKET TRANSCRIPT GENERATOR
 # -------------------------------------------------------------------------
 async def generate_transcript(thread: discord.Thread, owner: discord.Member | None) -> tuple[io.BytesIO, str]:
-    """Fetches messages, returns a reusable memory buffer and timestamped filename."""
+    """Fetches messages, returns a reusable memory buffer and timestamped filename in TXT format."""
     
-    owner_info = {}
+    lines = []
+    lines.append(f"Ticket Name: {thread.name}")
+    lines.append(f"Created At: {thread.created_at.strftime('%Y-%m-%d %H:%M:%S') if thread.created_at else 'Unknown'}")
+    
     if owner:
-        owner_info = {
-            "username": str(owner),
-            "user_id": owner.id,
-            "account_created": owner.created_at.strftime("%Y-%m-%d %H:%M:%S") if owner.created_at else "Unknown",
-            "server_joined": owner.joined_at.strftime("%Y-%m-%d %H:%M:%S") if getattr(owner, 'joined_at', None) else "Unknown"
-        }
-
-    transcript_data = {
-        "ticket_name": thread.name,
-        "created_at": thread.created_at.strftime("%Y-%m-%d %H:%M:%S") if thread.created_at else "Unknown",
-        "owner_info": owner_info,
-        "messages": []
-    }
+        lines.append(f"Creator: {owner} (ID: {owner.id})")
+        lines.append(f"Account Created: {owner.created_at.strftime('%Y-%m-%d %H:%M:%S') if owner.created_at else 'Unknown'}")
+        lines.append(f"Server Joined: {owner.joined_at.strftime('%Y-%m-%d %H:%M:%S') if getattr(owner, 'joined_at', None) else 'Unknown'}")
     
+    lines.append("\n" + "=" * 50)
+    lines.append("TRANSCRIPT LOG")
+    lines.append("=" * 50 + "\n")
+    
+    # Loop through the history and format it nicely
     async for message in thread.history(limit=None, oldest_first=True):
-        if message.content or message.attachments:
-            attachments = [att.url for att in message.attachments]
-            transcript_data["messages"].append({
-                "author": str(message.author),
-                "author_id": message.author.id,
-                "timestamp": message.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-                "content": message.clean_content,
-                "attachments": attachments
-            })
+        timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        author_info = f"{message.author} ({message.author.id})"
+        
+        lines.append(f"[{timestamp}] {author_info}:")
+        
+        if message.clean_content:
+            lines.append(f"  {message.clean_content}")
+            
+        for att in message.attachments:
+            lines.append(f"  [Attachment: {att.url}]")
+            
+        lines.append("")  # Blank line between messages for readability
 
-    buffer = io.BytesIO()
-    buffer.write(json.dumps(transcript_data, indent=4).encode('utf-8'))
+    # Compile into a single string and encode to bytes
+    transcript_text = "\n".join(lines)
+    buffer = io.BytesIO(transcript_text.encode('utf-8'))
     
-    timestamp = discord.utils.utcnow().strftime("%Y-%m-%d_%H%M%S")
-    filename = f"transcript_{thread.name}_{timestamp}.json"
+    # Generate timestamped filename
+    timestamp_str = discord.utils.utcnow().strftime("%Y-%m-%d_%H%M%S")
+    filename = f"transcript_{thread.name}_{timestamp_str}.txt"
     
     return buffer, filename
 
