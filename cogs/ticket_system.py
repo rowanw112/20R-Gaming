@@ -63,7 +63,7 @@ def build_panel_embed(system_name: str, thumbnail_url: str = None) -> discord.Em
 
 
 # -------------------------------------------------------------------------
-# TICKET TRANSCRIPT & ALERT HELPERS
+# TICKET TRANSCRIPT & ROLE HELPERS
 # -------------------------------------------------------------------------
 async def generate_transcript(thread: discord.Thread, owner: discord.Member | None) -> tuple[io.BytesIO, str]:
     lines = []
@@ -91,52 +91,34 @@ async def generate_transcript(thread: discord.Thread, owner: discord.Member | No
     timestamp_str = discord.utils.utcnow().strftime("%Y-%m-%d_%H%M%S")
     return buffer, f"transcript_{thread.name}_{timestamp_str}.txt"
 
-async def update_ticket_alert(guild: discord.Guild, ticket_data: dict, status: str, actor: discord.Member = None):
-    """Updates the staff dashboard alert embed silently."""
-    alert_msg_id = ticket_data.get("alert_message_id")
-    loc_id = ticket_data.get("alert_location_id")
-    if not alert_msg_id or not loc_id: return
+async def check_and_remove_ticket_role(guild: discord.Guild, member: discord.Member, cfg: dict, closed_thread_id: str, ticket_role_id: int | None):
+    """Safely removes the ticket role only if the user has no other active tickets using that same role."""
+    if not ticket_role_id or not member: return
     
-    target = guild.get_channel(loc_id) or guild.get_thread(loc_id)
-    if not target: return
+    has_other_tickets = any(
+        tid != closed_thread_id and tdata.get("owner_id") == member.id and tdata.get("ticket_role_id") == ticket_role_id
+        for tid, tdata in cfg.get("active_tickets", {}).items()
+    )
     
-    try:
-        msg = await target.fetch_message(alert_msg_id)
-        embed = msg.embeds[0]
-        owner_id = ticket_data.get("owner_id")
-        thread_id = ticket_data.get("thread_id")
-        
-        desc = f"**Creator:** <@{owner_id}>\n**Thread:** <#{thread_id}>\n"
-        if status == "claimed":
-            desc += f"**Status:** 🔵 Claimed by {actor.mention}"
-            embed.color = discord.Color.blue()
-        elif status == "closed":
-            desc += f"**Status:** 🟢 Closed by {actor.mention}"
-            embed.color = discord.Color.green()
-        elif status == "deleted":
-            desc += f"**Status:** 🔴 Deleted by {actor.mention}"
-            embed.color = discord.Color.dark_grey()
-        elif status == "abandoned":
-            desc += f"**Status:** 🔴 Auto-Deleted (User Left Thread)"
-            embed.color = discord.Color.dark_grey()
-            
-        embed.description = desc
-        await msg.edit(embed=embed)
-    except discord.HTTPException:
-        pass
+    if not has_other_tickets:
+        role = guild.get_role(ticket_role_id)
+        if role:
+            try: await member.remove_roles(role)
+            except discord.HTTPException: pass
 
 
 # -------------------------------------------------------------------------
 # TICKET MODALS
 # -------------------------------------------------------------------------
 class TicketModal(discord.ui.Modal):
-    def __init__(self, title: str, category: str, system_name: str, support_role_ids: list[int], transcript_channel_id: int | None, alert_channel_id: int | None):
+    def __init__(self, title: str, category: str, system_name: str, support_role_ids: list[int], transcript_channel_id: int | None, ticket_channel_id: int | None, ticket_role_id: int | None):
         super().__init__(title=title)
         self.category = category
         self.system_name = system_name
         self.support_role_ids = support_role_ids
         self.transcript_channel_id = transcript_channel_id
-        self.alert_channel_id = alert_channel_id
+        self.ticket_channel_id = ticket_channel_id
+        self.ticket_role_id = ticket_role_id
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
@@ -145,7 +127,7 @@ class TicketModal(discord.ui.Modal):
         cfg = load_ticket_config(guild.id)
         active_tickets = cfg.get("active_tickets", {})
         
-        # 1. Ticket Limit Check (Anti-Spam) - NOW CHECKS CATEGORY
+        # 1. Ticket Limit Check (Anti-Spam)
         for tid, tdata in active_tickets.items():
             if (tdata.get("owner_id") == member.id and 
                 tdata.get("system_name") == self.system_name and 
@@ -156,9 +138,15 @@ class TicketModal(discord.ui.Modal):
                 )
                 
         await interaction.response.defer(ephemeral=True)
-        channel = interaction.channel
         
-        if not isinstance(channel, discord.TextChannel):
+        # 2. Determine target channel for the thread
+        target_channel = interaction.channel
+        if self.ticket_channel_id:
+            fetched_channel = guild.get_channel(self.ticket_channel_id)
+            if isinstance(fetched_channel, discord.TextChannel):
+                target_channel = fetched_channel
+                
+        if not isinstance(target_channel, discord.TextChannel):
             return await interaction.followup.send("❌ Tickets must be opened in a standard text channel.", ephemeral=True)
 
         clean_name = re.sub(r"^\[.*?\]\s*|^\(.*?\)\s*", "", member.display_name).strip()
@@ -166,7 +154,7 @@ class TicketModal(discord.ui.Modal):
         thread_name = f"{prefix_map.get(self.category, 'Ticket')}-{clean_name}"
         
         try:
-            thread = await channel.create_thread(
+            thread = await target_channel.create_thread(
                 name=thread_name, type=discord.ChannelType.private_thread, invitable=False, auto_archive_duration=10080
             )
         except discord.HTTPException as e:
@@ -174,58 +162,22 @@ class TicketModal(discord.ui.Modal):
 
         await thread.add_user(member)
         
-        # 2. Setup Staff Alert Message
-        alert_msg = None
-        alert_location_id = None
-        if self.alert_channel_id:
-            alert_chan = guild.get_channel(self.alert_channel_id)
-            if alert_chan and isinstance(alert_chan, discord.TextChannel):
-                alert_target = alert_chan
-                keyword = prefix_map.get(self.category, "").lower()
-                found_thread = False
-                
-                # Automatically route into sub-threads if they exist in the alert channel
-                for t in alert_chan.threads:
-                    if keyword in t.name.lower():
-                        alert_target = t
-                        found_thread = True
-                        break
-                
-                # Auto-create the thread if it wasn't found
-                if not found_thread:
-                    try:
-                        alert_target = await alert_chan.create_thread(
-                            name=f"{prefix_map.get(self.category, 'Tickets')} Alerts",
-                            type=discord.ChannelType.public_thread
-                        )
-                    except discord.HTTPException:
-                        pass # Fallback to the main channel if it fails
-                        
-                alert_embed = discord.Embed(
-                    title=f"🎫 New Ticket | {self.system_name}",
-                    description=f"**Creator:** {member.mention}\n**Thread:** {thread.mention}\n**Status:** 🟡 Unclaimed",
-                    color=discord.Color.yellow()
-                )
-                for item in self.children:
-                    if isinstance(item, discord.ui.TextInput):
-                        alert_embed.add_field(name=item.label, value=item.value or "N/A", inline=False)
-                        
-                try:
-                    alert_msg = await alert_target.send(embed=alert_embed, silent=True)
-                    alert_location_id = alert_target.id
-                except discord.HTTPException:
-                    pass
+        # 3. Assign Ticket Role if configured
+        if self.ticket_role_id:
+            role = guild.get_role(self.ticket_role_id)
+            if role:
+                try: await member.add_roles(role)
+                except discord.HTTPException: pass
 
-        # 3. Save to Config
+        # 4. Save to Config
         cfg["active_tickets"][str(thread.id)] = {
             "thread_id": thread.id,
             "owner_id": member.id,
             "support_role_ids": self.support_role_ids,
             "system_name": self.system_name,
-            "category": self.category, # Saves the ticket type for the anti-spam check
+            "category": self.category,
             "transcript_channel_id": self.transcript_channel_id,
-            "alert_message_id": alert_msg.id if alert_msg else None,
-            "alert_location_id": alert_location_id
+            "ticket_role_id": self.ticket_role_id
         }
         save_ticket_config(guild.id, cfg)
 
@@ -252,21 +204,21 @@ class TicketModal(discord.ui.Modal):
 
 
 class ReportModal(TicketModal):
-    def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, alert_id: int | None):
-        super().__init__(title="Report a Player", category="Report User", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, alert_channel_id=alert_id)
+    def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, t_chan_id: int | None, t_role_id: int | None):
+        super().__init__(title="Report a Player", category="Report User", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, ticket_channel_id=t_chan_id, ticket_role_id=t_role_id)
         self.add_item(discord.ui.TextInput(label="Reported Player Name / ID", placeholder="Who are you reporting?", required=True, max_length=100))
         self.add_item(discord.ui.TextInput(label="Reason for Report", placeholder="What rule was broken?", style=discord.TextStyle.paragraph, required=True, max_length=500))
 
 class AppealModal(TicketModal):
-    def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, alert_id: int | None):
-        super().__init__(title="Appeal a Ban", category="Appeal a Ban", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, alert_channel_id=alert_id)
+    def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, t_chan_id: int | None, t_role_id: int | None):
+        super().__init__(title="Appeal a Ban", category="Appeal a Ban", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, ticket_channel_id=t_chan_id, ticket_role_id=t_role_id)
         self.add_item(discord.ui.TextInput(label="SteamID64", placeholder="Found at https://steamid.io/lookup", required=True, max_length=100))
         self.add_item(discord.ui.TextInput(label="Why were you banned?", style=discord.TextStyle.paragraph, required=True, max_length=300))
         self.add_item(discord.ui.TextInput(label="Why should you be unbanned?", style=discord.TextStyle.paragraph, required=True, max_length=500))
 
 class WhitelistModal(TicketModal):
-    def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, alert_id: int | None):
-        super().__init__(title="Whitelisting Request", category="Whitelisting", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, alert_channel_id=alert_id)
+    def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, t_chan_id: int | None, t_role_id: int | None):
+        super().__init__(title="Whitelisting Request", category="Whitelisting", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, ticket_channel_id=t_chan_id, ticket_role_id=t_role_id)
         self.add_item(discord.ui.TextInput(label="SteamID64", placeholder="Found at https://steamid.io/lookup", required=True, max_length=100))
         self.add_item(discord.ui.TextInput(label="In-Game Name", required=True, max_length=100))
 
@@ -294,12 +246,13 @@ class TicketPanelView(discord.ui.View):
         sys_name = panel_data.get("system_name", "Support")
         roles = panel_data.get("support_role_ids", [])
         log_chan = panel_data.get("transcript_channel_id")
-        alert_chan = panel_data.get("alert_channel_id")
+        target_chan = panel_data.get("ticket_channel_id")
+        t_role = panel_data.get("ticket_role_id")
         
         choice = select.values[0]
-        if choice == "report": await interaction.response.send_modal(ReportModal(sys_name, roles, log_chan, alert_chan))
-        elif choice == "appeal": await interaction.response.send_modal(AppealModal(sys_name, roles, log_chan, alert_chan))
-        elif choice == "whitelist": await interaction.response.send_modal(WhitelistModal(sys_name, roles, log_chan, alert_chan))
+        if choice == "report": await interaction.response.send_modal(ReportModal(sys_name, roles, log_chan, target_chan, t_role))
+        elif choice == "appeal": await interaction.response.send_modal(AppealModal(sys_name, roles, log_chan, target_chan, t_role))
+        elif choice == "whitelist": await interaction.response.send_modal(WhitelistModal(sys_name, roles, log_chan, target_chan, t_role))
 
 
 class TicketManagementView(discord.ui.View):
@@ -323,14 +276,8 @@ class TicketManagementView(discord.ui.View):
         embed.set_footer(text=f"Ticket Claimed by: {interaction.user.display_name}")
         button.disabled = True
         
-        cfg = load_ticket_config(interaction.guild_id)
-        ticket_data = cfg.get("active_tickets", {}).get(str(interaction.channel_id), {})
-        
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.channel.send(f"🛡️ **{interaction.user.mention} has claimed this ticket and will be assisting you shortly.**")
-        
-        # Update Dashboard
-        await update_ticket_alert(interaction.guild, ticket_data, "claimed", interaction.user)
 
     @discord.ui.button(label="Close & Log", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="ticket_close")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -344,8 +291,9 @@ class TicketManagementView(discord.ui.View):
         
         owner_id = ticket_data.get("owner_id")
         transcript_channel_id = ticket_data.get("transcript_channel_id")
-        
+        ticket_role_id = ticket_data.get("ticket_role_id")
         owner = guild.get_member(owner_id) if owner_id else None
+        
         transcript_buffer, filename = await generate_transcript(thread, owner)
         
         for item in self.children: item.disabled = True
@@ -363,7 +311,7 @@ class TicketManagementView(discord.ui.View):
                     file=discord.File(transcript_buffer, filename)
                 )
                 
-        await update_ticket_alert(guild, ticket_data, "closed", interaction.user)
+        await check_and_remove_ticket_role(guild, owner, cfg, str(thread.id), ticket_role_id)
         
         if str(thread.id) in cfg.get("active_tickets", {}):
             del cfg["active_tickets"][str(thread.id)]
@@ -385,6 +333,7 @@ class TicketManagementView(discord.ui.View):
         
         owner_id = ticket_data.get("owner_id")
         transcript_channel_id = ticket_data.get("transcript_channel_id")
+        ticket_role_id = ticket_data.get("ticket_role_id")
         owner = guild.get_member(owner_id) if owner_id else None
         
         transcript_buffer, filename = await generate_transcript(thread, owner)
@@ -398,7 +347,7 @@ class TicketManagementView(discord.ui.View):
                     file=discord.File(transcript_buffer, filename)
                 )
                 
-        await update_ticket_alert(guild, ticket_data, "deleted", interaction.user)
+        await check_and_remove_ticket_role(guild, owner, cfg, str(thread.id), ticket_role_id)
         
         if str(thread.id) in cfg.get("active_tickets", {}):
             del cfg["active_tickets"][str(thread.id)]
@@ -460,6 +409,7 @@ class TicketSystem(commands.Cog):
         if ticket_data.get("owner_id") == member.id:
             owner_id = member.id
             transcript_channel_id = ticket_data.get("transcript_channel_id")
+            ticket_role_id = ticket_data.get("ticket_role_id")
             owner = guild.get_member(owner_id)
             
             transcript_buffer, filename = await generate_transcript(thread, owner)
@@ -473,7 +423,7 @@ class TicketSystem(commands.Cog):
                         file=discord.File(transcript_buffer, filename)
                     )
             
-            await update_ticket_alert(guild, ticket_data, "abandoned")
+            await check_and_remove_ticket_role(guild, owner, cfg, str(thread.id), ticket_role_id)
             
             del cfg["active_tickets"][str(thread.id)]
             save_ticket_config(guild.id, cfg)
@@ -487,10 +437,11 @@ class TicketSystem(commands.Cog):
         system_name="The name of the system (e.g., Wardogs, Squad, General Support)",
         support_roles="List of roles allowed to manage these tickets (mention them or use IDs)",
         transcript_channel="The channel where closed ticket transcripts will be dumped",
-        alert_channel="Channel for silent staff alerts when tickets open",
-        thumbnail_url="Optional image URL to display in the top right of the embed"
+        ticket_channel="Optional: Channel where the ticket threads will be created",
+        ticket_role="Optional: Role assigned to users when they open a ticket",
+        thumbnail_url="Optional: Image URL to display in the top right of the embed"
     )
-    async def send_ticket_panel(self, interaction: discord.Interaction, system_name: str, support_roles: str, transcript_channel: discord.TextChannel, alert_channel: discord.TextChannel = None, thumbnail_url: str = None):
+    async def send_ticket_panel(self, interaction: discord.Interaction, system_name: str, support_roles: str, transcript_channel: discord.TextChannel, ticket_channel: discord.TextChannel = None, ticket_role: discord.Role = None, thumbnail_url: str = None):
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel): return await interaction.followup.send("❌ Ticket panels can only be placed in Text Channels.", ephemeral=True)
@@ -507,7 +458,8 @@ class TicketSystem(commands.Cog):
             "system_name": system_name,
             "support_role_ids": parsed_role_ids,
             "transcript_channel_id": transcript_channel.id,
-            "alert_channel_id": alert_channel.id if alert_channel else None,
+            "ticket_channel_id": ticket_channel.id if ticket_channel else None,
+            "ticket_role_id": ticket_role.id if ticket_role else None,
             "channel_id": channel.id,
             "thumbnail_url": thumbnail_url
         }
@@ -519,9 +471,9 @@ class TicketSystem(commands.Cog):
     @app_commands.describe(
         message_id="The ID of the panel message you want to edit",
         system_name="New system name", support_roles="New support roles", transcript_channel="New transcript channel",
-        alert_channel="New alert channel", thumbnail_url="New thumbnail URL"
+        ticket_channel="New target channel for tickets", ticket_role="New ticket role to assign", thumbnail_url="New thumbnail URL"
     )
-    async def edit_ticket_panel(self, interaction: discord.Interaction, message_id: str, system_name: str = None, support_roles: str = None, transcript_channel: discord.TextChannel = None, alert_channel: discord.TextChannel = None, thumbnail_url: str = None):
+    async def edit_ticket_panel(self, interaction: discord.Interaction, message_id: str, system_name: str = None, support_roles: str = None, transcript_channel: discord.TextChannel = None, ticket_channel: discord.TextChannel = None, ticket_role: discord.Role = None, thumbnail_url: str = None):
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
         cfg = load_ticket_config(interaction.guild_id)
@@ -537,7 +489,9 @@ class TicketSystem(commands.Cog):
         
         if parsed_role_ids: panel_data["support_role_ids"] = parsed_role_ids
         if transcript_channel: panel_data["transcript_channel_id"] = transcript_channel.id
-        if alert_channel: panel_data["alert_channel_id"] = alert_channel.id
+        if ticket_channel: panel_data["ticket_channel_id"] = ticket_channel.id
+        if ticket_role: panel_data["ticket_role_id"] = ticket_role.id
+        
         panel_data["system_name"] = final_system
         panel_data["channel_id"] = channel.id
         final_thumb = thumbnail_url if thumbnail_url is not None else panel_data.get("thumbnail_url")
@@ -549,7 +503,7 @@ class TicketSystem(commands.Cog):
                 tdata["system_name"] = final_system
                 if parsed_role_ids: tdata["support_role_ids"] = parsed_role_ids
                 if transcript_channel: tdata["transcript_channel_id"] = transcript_channel.id
-                if alert_channel: tdata["alert_channel_id"] = alert_channel.id
+                if ticket_role: tdata["ticket_role_id"] = ticket_role.id
 
         save_ticket_config(interaction.guild_id, cfg)
         await msg.edit(embed=build_panel_embed(final_system, final_thumb), view=TicketPanelView())
