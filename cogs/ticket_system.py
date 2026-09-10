@@ -71,19 +71,39 @@ async def generate_transcript(thread: discord.Thread, owner: discord.Member | No
     lines.append(f"Created At: {thread.created_at.strftime('%Y-%m-%d %H:%M:%S') if thread.created_at else 'Unknown'}")
     
     if owner:
-        lines.append(f"Creator: {owner} (ID: {owner.id})")
+        lines.append(f"Creator: {owner.display_name} (ID: {owner.id})")
         lines.append(f"Account Created: {owner.created_at.strftime('%Y-%m-%d %H:%M:%S') if owner.created_at else 'Unknown'}")
         lines.append(f"Server Joined: {owner.joined_at.strftime('%Y-%m-%d %H:%M:%S') if getattr(owner, 'joined_at', None) else 'Unknown'}")
+    
+    # Pre-fetch all messages so we can grab the target SteamID/Player Name from the bot's initial embed
+    messages = [msg async for msg in thread.history(limit=None, oldest_first=True)]
+    
+    if messages and messages[0].embeds:
+        embed = messages[0].embeds[0]
+        for field in embed.fields:
+            if field.name in ["SteamID64", "Reported Player Name / ID"]:
+                lines.append(f"Target {field.name}: {field.value}")
     
     lines.append("\n" + "=" * 50)
     lines.append("TRANSCRIPT LOG")
     lines.append("=" * 50 + "\n")
     
-    async for message in thread.history(limit=None, oldest_first=True):
+    for message in messages:
         timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
-        lines.append(f"[{timestamp}] {message.author} ({message.author.id}):")
-        if message.clean_content: lines.append(f"  {message.clean_content}")
-        for att in message.attachments: lines.append(f"  [Attachment: {att.url}]")
+        lines.append(f"[{timestamp}] {message.author.display_name} ({message.author.id}):")
+        
+        content = message.content
+        # Replace User Mentions with Name + ID
+        for user in message.mentions:
+            content = re.sub(rf"<@!?{user.id}>", f"@{user.display_name} ({user.id})", content)
+        # Replace Role Mentions with Role Name + ID
+        for role in message.role_mentions:
+            content = content.replace(f"<@&{role.id}>", f"@{role.name} ({role.id})")
+            
+        if content: 
+            lines.append(f"  {content}")
+        for att in message.attachments: 
+            lines.append(f"  [Attachment: {att.url}]")
         lines.append("")
 
     transcript_text = "\n".join(lines)
@@ -127,15 +147,16 @@ class TicketModal(discord.ui.Modal):
         cfg = load_ticket_config(guild.id)
         active_tickets = cfg.get("active_tickets", {})
         
-        # 1. Ticket Limit Check (Anti-Spam)
-        for tid, tdata in active_tickets.items():
-            if (tdata.get("owner_id") == member.id and 
-                tdata.get("system_name") == self.system_name and 
-                tdata.get("category") == self.category):
-                return await interaction.response.send_message(
-                    f"❌ You already have an active **{self.category}** ticket open for {self.system_name}. Please wait until it is closed before opening another.", 
-                    ephemeral=True
-                )
+        # 1. Ticket Limit Check (Anti-Spam) - Now allows unlimited reports
+        if self.category in ["Appeal a Ban", "Whitelisting"]:
+            for tid, tdata in active_tickets.items():
+                if (tdata.get("owner_id") == member.id and 
+                    tdata.get("system_name") == self.system_name and 
+                    tdata.get("category") == self.category):
+                    return await interaction.response.send_message(
+                        f"❌ You already have an active **{self.category}** ticket open for {self.system_name}. Please wait until it is closed before opening another.", 
+                        ephemeral=True
+                    )
                 
         await interaction.response.defer(ephemeral=True)
         
