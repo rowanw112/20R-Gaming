@@ -216,7 +216,7 @@ class TicketModal(discord.ui.Modal):
         extracted_target_id = None
         for item in self.children:
             if isinstance(item, discord.ui.TextInput):
-                if item.label in ["SteamID64 / EOS ID", "Reported Player Name / ID"]:
+                if item.label in ["SteamID64 / EOS ID", "Reported Name / Steam / EOS ID"]:
                     extracted_target_id = item.value
                 embed.add_field(name=item.label, value=item.value or "N/A", inline=False)
 
@@ -236,7 +236,7 @@ class TicketModal(discord.ui.Modal):
         intro_content = f"👋 {member.mention} | {support_mentions}\n\n"
         
         if self.category == "Report User": 
-            intro_content += "**If you are reporting a player, let us know what is going on and share any video/screenshot evidence you have below.**"
+            intro_content += "**If you are reporting a player, let us know what is going on and share any video/screenshot evidence you have below.**\n-# 🔍 **Find their ID:** [SteamID.io](https://steamid.io/lookup) | [Epic Account Settings](https://www.epicgames.com/account)"
         elif self.category == "Appeal a Ban": 
             intro_content += "**A staff member will review your ban appeal shortly. Please ensure your SteamID / EOS ID is correct.**\n-# 🔍 **Find your ID:** [SteamID.io](https://steamid.io/lookup) | [Epic Account Settings](https://www.epicgames.com/account)"
         elif self.category == "Whitelisting": 
@@ -249,20 +249,35 @@ class TicketModal(discord.ui.Modal):
 class ReportModal(TicketModal):
     def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, t_chan_id: int | None, t_role_id: int | None):
         super().__init__(title="Report a Player", category="Report User", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, ticket_channel_id=t_chan_id, ticket_role_id=t_role_id)
-        self.add_item(discord.ui.TextInput(label="Reported Player Name / ID", placeholder="Who are you reporting?", required=True, max_length=100))
+        self.add_item(discord.ui.TextInput(
+            label="Reported Name / Steam / EOS ID", 
+            placeholder="Steam: steamid.io | Epic: epicgames.com/account", 
+            required=True, 
+            max_length=100
+        ))
         self.add_item(discord.ui.TextInput(label="Reason for Report", placeholder="What rule was broken?", style=discord.TextStyle.paragraph, required=True, max_length=500))
 
 class AppealModal(TicketModal):
     def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, t_chan_id: int | None, t_role_id: int | None):
         super().__init__(title="Appeal a Ban", category="Appeal a Ban", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, ticket_channel_id=t_chan_id, ticket_role_id=t_role_id)
-        self.add_item(discord.ui.TextInput(label="SteamID64 / EOS ID", placeholder="Steam: steamid.io | Epic: epicgames.com/account", required=True, max_length=100))
+        self.add_item(discord.ui.TextInput(
+            label="SteamID64 / EOS ID", 
+            placeholder="Steam: steamid.io | Epic: epicgames.com/account", 
+            required=True, 
+            max_length=100
+        ))
         self.add_item(discord.ui.TextInput(label="Why were you banned?", style=discord.TextStyle.paragraph, required=True, max_length=300))
         self.add_item(discord.ui.TextInput(label="Why should you be unbanned?", style=discord.TextStyle.paragraph, required=True, max_length=500))
 
 class WhitelistModal(TicketModal):
     def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, t_chan_id: int | None, t_role_id: int | None):
         super().__init__(title="Whitelisting Request", category="Whitelisting", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, ticket_channel_id=t_chan_id, ticket_role_id=t_role_id)
-        self.add_item(discord.ui.TextInput(label="SteamID64 / EOS ID", placeholder="Steam: steamid.io | Epic: epicgames.com/account", required=True, max_length=100))
+        self.add_item(discord.ui.TextInput(
+            label="SteamID64 / EOS ID", 
+            placeholder="Steam: steamid.io | Epic: epicgames.com/account", 
+            required=True, 
+            max_length=100
+        ))
         self.add_item(discord.ui.TextInput(label="In-Game Name", required=True, max_length=100))
 
 
