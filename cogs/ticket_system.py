@@ -357,9 +357,8 @@ class TicketManagementView(discord.ui.View):
         ticket_data = cfg.get("active_tickets", {}).get(str(interaction.channel_id))
         if not ticket_data: return await interaction.response.send_message("❌ Cannot find ticket data.", ephemeral=True)
             
-        is_owner = interaction.user.id == ticket_data.get("owner_id")
-        if not (self._is_staff(interaction) or is_owner):
-            return await interaction.response.send_message("❌ Only authorized support staff or the ticket creator can update the target ID.", ephemeral=True)
+        if not self._is_staff(interaction):
+            return await interaction.response.send_message("❌ Only authorized support staff can update the target ID.", ephemeral=True)
             
         # Pass interaction.message so the modal knows exactly which embed to edit!
         await interaction.response.send_modal(UpdateIDModal(interaction.message))
