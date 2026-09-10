@@ -203,21 +203,25 @@ class TicketModal(discord.ui.Modal):
         clean_name = re.sub(r"^\[.*?\]\s*|^\(.*?\)\s*", "", member.display_name).strip()
         prefix_map = {"Report User": "Report", "Appeal a Ban": "Appeal", "Whitelisting": "Whitelist"}
         thread_name = f"{prefix_map.get(self.category, 'Ticket')}-{clean_name}"
-        
-        try:
-            thread = await target_channel.create_thread(
-                name=thread_name, type=discord.ChannelType.private_thread, invitable=False, auto_archive_duration=10080
-            )
-        except discord.HTTPException as e:
-            return await interaction.followup.send(f"❌ Failed to create ticket thread: {e}", ephemeral=True)
 
-        await thread.add_user(member)
-        
+        # 1. ASSIGN ROLE FIRST so they can see the target channel
         if self.ticket_role_id:
             role = guild.get_role(self.ticket_role_id)
             if role:
                 try: await member.add_roles(role)
                 except discord.HTTPException: pass
+        
+        # 2. CREATE THREAD
+        try:
+            thread = await target_channel.create_thread(
+                name=thread_name, type=discord.ChannelType.private_thread, invitable=False, auto_archive_duration=10080
+            )
+        except discord.HTTPException as e:
+            # If thread creation fails, optionally roll back the role addition here if you want to be super strict
+            return await interaction.followup.send(f"❌ Failed to create ticket thread: {e}", ephemeral=True)
+
+        # 3. ADD USER TO THREAD
+        await thread.add_user(member)
 
         embed = discord.Embed(title=f"🎫 {self.category} | {self.system_name}", color=discord.Color.blue(), timestamp=discord.utils.utcnow())
         embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
