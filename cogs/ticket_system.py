@@ -126,8 +126,9 @@ async def check_and_remove_ticket_role(guild: discord.Guild, member: discord.Mem
 # TICKET MODALS
 # -------------------------------------------------------------------------
 class UpdateIDModal(discord.ui.Modal):
-    def __init__(self):
+    def __init__(self, target_message: discord.Message):
         super().__init__(title="Update Target ID")
+        self.target_message = target_message
         self.add_item(discord.ui.TextInput(
             label="New SteamID / EOS ID / Name", 
             placeholder="Enter the corrected ID here", 
@@ -143,6 +144,19 @@ class UpdateIDModal(discord.ui.Modal):
             new_id = self.children[0].value
             cfg["active_tickets"][thread_id_str]["target_id"] = new_id
             save_ticket_config(interaction.guild_id, cfg)
+            
+            # Visually update the embed
+            if self.target_message and self.target_message.embeds:
+                embed = self.target_message.embeds[0]
+                for i, field in enumerate(embed.fields):
+                    if field.name in ["SteamID64 / EOS ID", "Reported Name / Steam / EOS ID"]:
+                        embed.set_field_at(i, name=field.name, value=new_id, inline=field.inline)
+                        break
+                try:
+                    await self.target_message.edit(embed=embed)
+                except discord.HTTPException:
+                    pass
+                    
             await interaction.response.send_message(f"📝 **Target ID has been successfully updated to:** `{new_id}`")
         else:
             await interaction.response.send_message("❌ Could not find this ticket in the active database.", ephemeral=True)
@@ -337,7 +351,7 @@ class TicketManagementView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.channel.send(f"🛡️ **{interaction.user.mention} has claimed this ticket and will be assisting you shortly.**")
 
-    @discord.ui.button(label="Update ID", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="ticket_update_id")
+    @discord.ui.button(label="Update Player ID", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="ticket_update_id")
     async def update_id(self, interaction: discord.Interaction, button: discord.ui.Button):
         cfg = load_ticket_config(interaction.guild_id)
         ticket_data = cfg.get("active_tickets", {}).get(str(interaction.channel_id))
@@ -347,7 +361,8 @@ class TicketManagementView(discord.ui.View):
         if not (self._is_staff(interaction) or is_owner):
             return await interaction.response.send_message("❌ Only authorized support staff or the ticket creator can update the target ID.", ephemeral=True)
             
-        await interaction.response.send_modal(UpdateIDModal())
+        # Pass interaction.message so the modal knows exactly which embed to edit!
+        await interaction.response.send_modal(UpdateIDModal(interaction.message))
 
     @discord.ui.button(label="Close & Log", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="ticket_close")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
