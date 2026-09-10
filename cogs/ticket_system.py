@@ -65,7 +65,7 @@ def build_panel_embed(system_name: str, thumbnail_url: str = None) -> discord.Em
 # -------------------------------------------------------------------------
 # TICKET TRANSCRIPT & ROLE HELPERS
 # -------------------------------------------------------------------------
-async def generate_transcript(thread: discord.Thread, owner: discord.Member | None) -> tuple[io.BytesIO, str]:
+async def generate_transcript(thread: discord.Thread, owner: discord.Member | None, target_id: str | None) -> tuple[io.BytesIO, str]:
     lines = []
     lines.append(f"Ticket Name: {thread.name}")
     lines.append(f"Created At: {thread.created_at.strftime('%Y-%m-%d %H:%M:%S') if thread.created_at else 'Unknown'}")
@@ -75,28 +75,23 @@ async def generate_transcript(thread: discord.Thread, owner: discord.Member | No
         lines.append(f"Account Created: {owner.created_at.strftime('%Y-%m-%d %H:%M:%S') if owner.created_at else 'Unknown'}")
         lines.append(f"Server Joined: {owner.joined_at.strftime('%Y-%m-%d %H:%M:%S') if getattr(owner, 'joined_at', None) else 'Unknown'}")
     
-    # Pre-fetch all messages so we can grab the target SteamID/EOS ID/Player Name from the bot's initial embed
-    messages = [msg async for msg in thread.history(limit=None, oldest_first=True)]
-    
-    if messages and messages[0].embeds:
-        embed = messages[0].embeds[0]
-        for field in embed.fields:
-            if field.name in ["SteamID64 / EOS ID", "Reported Player Name / ID"]:
-                lines.append(f"Target {field.name}: {field.value}")
-    
+    if target_id:
+        lines.append(f"Target ID / Reported: {target_id}")
+        
     lines.append("\n" + "=" * 50)
     lines.append("TRANSCRIPT LOG")
     lines.append("=" * 50 + "\n")
     
-    for message in messages:
+    async for message in thread.history(limit=None, oldest_first=True):
+        if message.type != discord.MessageType.default and message.type != discord.MessageType.reply:
+            continue
+            
         timestamp = message.created_at.strftime("%Y-%m-%d %H:%M:%S")
         lines.append(f"[{timestamp}] {message.author.display_name} ({message.author.id}):")
         
-        content = message.content
-        # Replace User Mentions with Name + ID
+        content = message.content or ""
         for user in message.mentions:
             content = re.sub(rf"<@!?{user.id}>", f"@{user.display_name} ({user.id})", content)
-        # Replace Role Mentions with Role Name + ID
         for role in message.role_mentions:
             content = content.replace(f"<@&{role.id}>", f"@{role.name} ({role.id})")
             
@@ -130,6 +125,29 @@ async def check_and_remove_ticket_role(guild: discord.Guild, member: discord.Mem
 # -------------------------------------------------------------------------
 # TICKET MODALS
 # -------------------------------------------------------------------------
+class UpdateIDModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Update Target ID")
+        self.add_item(discord.ui.TextInput(
+            label="New SteamID / EOS ID / Name", 
+            placeholder="Enter the corrected ID here", 
+            required=True, 
+            max_length=100
+        ))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = load_ticket_config(interaction.guild_id)
+        thread_id_str = str(interaction.channel_id)
+        
+        if thread_id_str in cfg.get("active_tickets", {}):
+            new_id = self.children[0].value
+            cfg["active_tickets"][thread_id_str]["target_id"] = new_id
+            save_ticket_config(interaction.guild_id, cfg)
+            await interaction.response.send_message(f"📝 **Target ID has been successfully updated to:** `{new_id}`")
+        else:
+            await interaction.response.send_message("❌ Could not find this ticket in the active database.", ephemeral=True)
+
+
 class TicketModal(discord.ui.Modal):
     def __init__(self, title: str, category: str, system_name: str, support_role_ids: list[int], transcript_channel_id: int | None, ticket_channel_id: int | None, ticket_role_id: int | None):
         super().__init__(title=title)
@@ -147,7 +165,6 @@ class TicketModal(discord.ui.Modal):
         cfg = load_ticket_config(guild.id)
         active_tickets = cfg.get("active_tickets", {})
         
-        # 1. Ticket Limit Check (Anti-Spam) - Now allows unlimited reports
         if self.category in ["Appeal a Ban", "Whitelisting"]:
             for tid, tdata in active_tickets.items():
                 if (tdata.get("owner_id") == member.id and 
@@ -160,7 +177,6 @@ class TicketModal(discord.ui.Modal):
                 
         await interaction.response.defer(ephemeral=True)
         
-        # 2. Determine target channel for the thread
         target_channel = interaction.channel
         if self.ticket_channel_id:
             fetched_channel = guild.get_channel(self.ticket_channel_id)
@@ -183,24 +199,11 @@ class TicketModal(discord.ui.Modal):
 
         await thread.add_user(member)
         
-        # 3. Assign Ticket Role if configured
         if self.ticket_role_id:
             role = guild.get_role(self.ticket_role_id)
             if role:
                 try: await member.add_roles(role)
                 except discord.HTTPException: pass
-
-        # 4. Save to Config
-        cfg["active_tickets"][str(thread.id)] = {
-            "thread_id": thread.id,
-            "owner_id": member.id,
-            "support_role_ids": self.support_role_ids,
-            "system_name": self.system_name,
-            "category": self.category,
-            "transcript_channel_id": self.transcript_channel_id,
-            "ticket_role_id": self.ticket_role_id
-        }
-        save_ticket_config(guild.id, cfg)
 
         embed = discord.Embed(title=f"🎫 {self.category} | {self.system_name}", color=discord.Color.blue(), timestamp=discord.utils.utcnow())
         embed.set_author(name=member.display_name, icon_url=member.display_avatar.url)
@@ -209,9 +212,25 @@ class TicketModal(discord.ui.Modal):
         if getattr(member, 'joined_at', None):
             embed.add_field(name="Joined Server", value=f"<t:{int(member.joined_at.timestamp())}:R>", inline=True)
         
+        # Extract the target ID directly from the user's initial input
+        extracted_target_id = None
         for item in self.children:
             if isinstance(item, discord.ui.TextInput):
+                if item.label in ["SteamID64 / EOS ID", "Reported Player Name / ID"]:
+                    extracted_target_id = item.value
                 embed.add_field(name=item.label, value=item.value or "N/A", inline=False)
+
+        cfg["active_tickets"][str(thread.id)] = {
+            "thread_id": thread.id,
+            "owner_id": member.id,
+            "support_role_ids": self.support_role_ids,
+            "system_name": self.system_name,
+            "category": self.category,
+            "transcript_channel_id": self.transcript_channel_id,
+            "ticket_role_id": self.ticket_role_id,
+            "target_id": extracted_target_id
+        }
+        save_ticket_config(guild.id, cfg)
 
         support_mentions = " ".join([f"<@&{rid}>" for rid in self.support_role_ids]) if self.support_role_ids else "Support Staff"
         intro_content = f"👋 {member.mention} | {support_mentions}\n\n"
@@ -222,7 +241,7 @@ class TicketModal(discord.ui.Modal):
             intro_content += "**A staff member will review your ban appeal shortly. Please ensure your SteamID / EOS ID is correct.**\n-# 🔍 **Find your ID:** [SteamID.io](https://steamid.io/lookup) | [Epic Account Settings](https://www.epicgames.com/account)"
         elif self.category == "Whitelisting": 
             intro_content += "**Please wait while an admin reviews your whitelist request and links your Discord.**\n-# 🔍 **Find your ID:** [SteamID.io](https://steamid.io/lookup) | [Epic Account Settings](https://www.epicgames.com/account)"
-            
+
         await thread.send(content=intro_content, embed=embed, view=TicketManagementView())
         await interaction.followup.send(f"✅ Ticket created! Click here to view it: {thread.mention}", ephemeral=True)
 
@@ -236,25 +255,16 @@ class ReportModal(TicketModal):
 class AppealModal(TicketModal):
     def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, t_chan_id: int | None, t_role_id: int | None):
         super().__init__(title="Appeal a Ban", category="Appeal a Ban", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, ticket_channel_id=t_chan_id, ticket_role_id=t_role_id)
-        self.add_item(discord.ui.TextInput(
-            label="SteamID64 / EOS ID", 
-            placeholder="Steam: steamid.io | Epic: epicgames.com/account", 
-            required=True, 
-            max_length=100
-        ))
+        self.add_item(discord.ui.TextInput(label="SteamID64 / EOS ID", placeholder="Steam: steamid.io | Epic: epicgames.com/account", required=True, max_length=100))
         self.add_item(discord.ui.TextInput(label="Why were you banned?", style=discord.TextStyle.paragraph, required=True, max_length=300))
         self.add_item(discord.ui.TextInput(label="Why should you be unbanned?", style=discord.TextStyle.paragraph, required=True, max_length=500))
 
 class WhitelistModal(TicketModal):
     def __init__(self, sys_name: str, support_ids: list[int], log_id: int | None, t_chan_id: int | None, t_role_id: int | None):
         super().__init__(title="Whitelisting Request", category="Whitelisting", system_name=sys_name, support_role_ids=support_ids, transcript_channel_id=log_id, ticket_channel_id=t_chan_id, ticket_role_id=t_role_id)
-        self.add_item(discord.ui.TextInput(
-            label="SteamID64 / EOS ID", 
-            placeholder="Steam: steamid.io | Epic: epicgames.com/account", 
-            required=True, 
-            max_length=100
-        ))
+        self.add_item(discord.ui.TextInput(label="SteamID64 / EOS ID", placeholder="Steam: steamid.io | Epic: epicgames.com/account", required=True, max_length=100))
         self.add_item(discord.ui.TextInput(label="In-Game Name", required=True, max_length=100))
+
 
 # -------------------------------------------------------------------------
 # INTERACTIVE VIEWS
@@ -312,22 +322,38 @@ class TicketManagementView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.channel.send(f"🛡️ **{interaction.user.mention} has claimed this ticket and will be assisting you shortly.**")
 
+    @discord.ui.button(label="Update ID", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="ticket_update_id")
+    async def update_id(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = load_ticket_config(interaction.guild_id)
+        ticket_data = cfg.get("active_tickets", {}).get(str(interaction.channel_id))
+        if not ticket_data: return await interaction.response.send_message("❌ Cannot find ticket data.", ephemeral=True)
+            
+        is_owner = interaction.user.id == ticket_data.get("owner_id")
+        if not (self._is_staff(interaction) or is_owner):
+            return await interaction.response.send_message("❌ Only authorized support staff or the ticket creator can update the target ID.", ephemeral=True)
+            
+        await interaction.response.send_modal(UpdateIDModal())
+
     @discord.ui.button(label="Close & Log", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="ticket_close")
     async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self._is_staff(interaction): return await interaction.response.send_message("❌ Only authorized support staff can close tickets.", ephemeral=True)
+        cfg = load_ticket_config(interaction.guild_id)
+        ticket_data = cfg.get("active_tickets", {}).get(str(interaction.channel_id), {})
+        is_owner = interaction.user.id == ticket_data.get("owner_id")
+        
+        if not (self._is_staff(interaction) or is_owner):
+            return await interaction.response.send_message("❌ Only authorized support staff or the ticket creator can close tickets.", ephemeral=True)
             
         await interaction.response.defer()
         thread = interaction.channel
         guild = interaction.guild
-        cfg = load_ticket_config(guild.id)
-        ticket_data = cfg.get("active_tickets", {}).get(str(thread.id), {})
         
         owner_id = ticket_data.get("owner_id")
         transcript_channel_id = ticket_data.get("transcript_channel_id")
         ticket_role_id = ticket_data.get("ticket_role_id")
+        target_id = ticket_data.get("target_id")
         owner = guild.get_member(owner_id) if owner_id else None
         
-        transcript_buffer, filename = await generate_transcript(thread, owner)
+        transcript_buffer, filename = await generate_transcript(thread, owner, target_id)
         
         for item in self.children: item.disabled = True
         await interaction.edit_original_response(view=self)
@@ -338,9 +364,13 @@ class TicketManagementView(discord.ui.View):
         if transcript_channel_id:
             log_channel = guild.get_channel(transcript_channel_id)
             if log_channel:
+                owner_info = f"{owner.display_name} ({owner.id})" if owner else f"Unknown ({owner_id})"
+                closer_info = f"{interaction.user.display_name} ({interaction.user.id})"
+                target_str = f"\n**Target / SteamID:** `{target_id}`" if target_id else ""
+                
                 transcript_buffer.seek(0)
                 await log_channel.send(
-                    content=f"📄 **Ticket Closed:** `{thread.name}`\n**Creator:** <@{owner_id}>\n**Closed By:** {interaction.user.mention}",
+                    content=f"📄 **Ticket Closed:** `{thread.name}`\n**Creator:** {owner_info}\n**Closed By:** {closer_info}{target_str}",
                     file=discord.File(transcript_buffer, filename)
                 )
                 
@@ -367,16 +397,21 @@ class TicketManagementView(discord.ui.View):
         owner_id = ticket_data.get("owner_id")
         transcript_channel_id = ticket_data.get("transcript_channel_id")
         ticket_role_id = ticket_data.get("ticket_role_id")
+        target_id = ticket_data.get("target_id")
         owner = guild.get_member(owner_id) if owner_id else None
         
-        transcript_buffer, filename = await generate_transcript(thread, owner)
+        transcript_buffer, filename = await generate_transcript(thread, owner, target_id)
         
         if transcript_channel_id:
             log_channel = guild.get_channel(transcript_channel_id)
             if log_channel:
+                owner_info = f"{owner.display_name} ({owner.id})" if owner else f"Unknown ({owner_id})"
+                deleter_info = f"{interaction.user.display_name} ({interaction.user.id})"
+                target_str = f"\n**Target / SteamID:** `{target_id}`" if target_id else ""
+                
                 transcript_buffer.seek(0)
                 await log_channel.send(
-                    content=f"🗑️ **Ticket Deleted:** `{thread.name}`\n**Creator:** <@{owner_id}>\n**Deleted By:** {interaction.user.mention}",
+                    content=f"🗑️ **Ticket Deleted:** `{thread.name}`\n**Creator:** {owner_info}\n**Deleted By:** {deleter_info}{target_str}",
                     file=discord.File(transcript_buffer, filename)
                 )
                 
@@ -443,16 +478,20 @@ class TicketSystem(commands.Cog):
             owner_id = member.id
             transcript_channel_id = ticket_data.get("transcript_channel_id")
             ticket_role_id = ticket_data.get("ticket_role_id")
+            target_id = ticket_data.get("target_id")
             owner = guild.get_member(owner_id)
             
-            transcript_buffer, filename = await generate_transcript(thread, owner)
+            transcript_buffer, filename = await generate_transcript(thread, owner, target_id)
             
             if transcript_channel_id:
                 log_channel = guild.get_channel(transcript_channel_id)
                 if log_channel:
+                    owner_info = f"{owner.display_name} ({owner.id})" if owner else f"Unknown ({owner_id})"
+                    target_str = f"\n**Target / SteamID:** `{target_id}`" if target_id else ""
+                    
                     transcript_buffer.seek(0)
                     await log_channel.send(
-                        content=f"🗑️ **Ticket Auto-Deleted (User Left Thread):** `{thread.name}`\n**Creator:** <@{owner_id}>",
+                        content=f"🗑️ **Ticket Auto-Deleted (User Left Thread):** `{thread.name}`\n**Creator:** {owner_info}{target_str}",
                         file=discord.File(transcript_buffer, filename)
                     )
             
