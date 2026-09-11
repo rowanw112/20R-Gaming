@@ -122,7 +122,7 @@ class MemberApplicationModal(discord.ui.Modal, title="20R Member Application"):
         max_length=5,
     )
     steam = discord.ui.TextInput(
-        label="Steam Profile URL / ID, make sure your profile is public",
+        label="Steam Profile URL/ID (Must be Public)",
         placeholder="https://steamcommunity.com/id/yourid",
         required=True,
         max_length=100,
