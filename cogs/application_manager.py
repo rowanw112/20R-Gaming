@@ -122,9 +122,9 @@ class MemberApplicationModal(discord.ui.Modal, title="20R Member Application"):
         max_length=5,
     )
     steam = discord.ui.TextInput(
-        label="Steam Profile URL / ID (Optional)",
-        placeholder="https://steamcommunity.com/id/yourid (or leave blank)",
-        required=False,
+        label="Steam Profile URL / ID (Optional), make sure your profile is public",
+        placeholder="https://steamcommunity.com/id/yourid",
+        required=True,
         max_length=100,
     )
     recruiter = discord.ui.TextInput(
